@@ -57,7 +57,7 @@ PDF ──▶ extract text ──▶ detect chapters ──▶ ┌─ analyse ea
    - `~/.aismartguy/llama-cpp/`  ← recommended
    - anything on your `PATH`
 
-   Place a llama.cpp build — the executables **and** their `ggml*` / CUDA DLLs — in `~/.aismartguy/llama-cpp/`. Use a **CUDA** build only on machines with a matching NVIDIA GPU + driver; otherwise use a **CPU** build. This runtime is not bundled and is not downloaded automatically.
+   Place a llama.cpp build — the executables **and** their `ggml*` / CUDA DLLs — in `~/.aismartguy/llama-cpp/`. Use a **CUDA** build only on machines with a matching NVIDIA GPU + driver; otherwise use a **CPU** build. This runtime is not bundled and is not downloaded automatically. The companion app **GGUF Chatbox** (see below) is built on this same engine and is the easiest way to obtain, host, and verify a working `llama.cpp` setup.
 3. **At least one GGUF model** on disk (a neutral, instruction-tuned model works best for unbiased analysis).
 
 > On first launch the app auto-seeds its RAG packets to `~/.aismartguy/rag_defaults/` — no manual setup required.
@@ -138,6 +138,20 @@ Each crate is self-contained — the workspace deliberately avoids cross-crate c
 ```sh
 cargo test --workspace --lib      # unit tests (no model required)
 ```
+
+---
+
+## Companion app: GGUF Chatbox
+
+**GGUF Chatbox** is the local llama.cpp server built to run alongside AiSmartGuy,
+sharing the same hardware-adaptive engine — VRAM detection, automatic context
+sizing, GGUF metadata reading, and GPU-layer mapping.
+
+Where AiSmartGuy runs a fixed book-analysis pipeline, Chatbox provides an
+interactive **llama.cpp server** for the same local GGUF models. It is the
+recommended companion for hosting and exercising your models: load a model and
+confirm it runs on your hardware in Chatbox, then point AiSmartGuy at the same
+model and `llama.cpp` build.
 
 ---
 
