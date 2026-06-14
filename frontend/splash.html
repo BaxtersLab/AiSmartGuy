@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=800, height=250, initial-scale=1.0">
+  <title>AiSmartGuy</title>
+  <link rel="stylesheet" href="splash.css">
+</head>
+<body>
+  <div class="splash-container" id="splash-container">
+    <img class="banner" src="assets/banner.png" alt="AiSmartGuy" draggable="false">
+    <p class="splash-status" id="splashStatus">Starting up…</p>
+  </div>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', function () {
+      var statusEl = document.getElementById('splashStatus');
+
+      // Listen for startup progress events from Rust
+      if (window.__TAURI__ && window.__TAURI__.event) {
+        window.__TAURI__.event.listen('startup-progress', function (event) {
+          if (event.payload && event.payload.message) {
+            statusEl.textContent = event.payload.message;
+          }
+        });
+      }
+
+      // Invoke the startup scan after a short visual pause
+      setTimeout(function () {
+        if (window.__TAURI__ && window.__TAURI__.core) {
+          window.__TAURI__.core
+            .invoke('startup_scan')
+            .catch(function (err) {
+              statusEl.textContent = 'Startup error: ' + err;
+              statusEl.style.color = '#ff6b6b';
+            });
+        }
+      }, 500);
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,12 @@
+{
+  "$schema": "https://schema.tauri.app/capabilities/2",
+  "identifier": "default",
+  "description": "AiSmartGuy default window permissions",
+  "windows": ["splash", "main"],
+  "permissions": [
+    "core:default",
+    "core:window:default",
+    "core:window:allow-destroy",
+    "core:webview:default"
+  ]
+}

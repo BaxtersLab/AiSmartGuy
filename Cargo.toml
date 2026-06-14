@@ -1,0 +1,18 @@
+[workspace]
+members = [
+    "crates/utils",
+    "crates/logging",
+    "crates/error_system",
+    "crates/manifest",
+    "crates/rag_engine",
+    "crates/pdf_io",
+    "crates/model_fetcher",
+    "crates/model_loader",
+    "crates/optimization",
+    "crates/orchestrator",
+    "crates/ui",
+    "crates/integration_tests",
+    "src-tauri",
+]
+
+resolver = "2"

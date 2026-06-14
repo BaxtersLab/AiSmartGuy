@@ -1,0 +1,231 @@
+{
+  "packet_id": 7,
+  "category": "racism_intolerance",
+  "description": "Detect discriminatory language, stereotyping, coded prejudice, and dehumanizing rhetoric targeting any group based on race, ethnicity, religion, gender, sexuality, disability, or national origin.",
+  "version": "1.0",
+  "rules": [
+    {
+      "rule_id": "RAC-01",
+      "name": "Blanket Group Attribution",
+      "pattern_type": "semantic",
+      "patterns": [
+        "those people",
+        "they're all the same",
+        "that's how they are",
+        "it's in their culture",
+        "it's in their nature",
+        "it's in their blood",
+        "they're all like that",
+        "you know how they are",
+        "every single one of them",
+        "what do you expect from"
+      ],
+      "severity": "high",
+      "explanation": "Assigns a trait, behavior, or deficiency to an entire group as though it were innate or universal. Individuals vanish — replaced by a monolithic 'they' that all share the same flaw. Look for group pronouns ('they', 'them', 'those people') combined with universal attributions ('all', 'always', 'every') applied to race, ethnicity, religion, or national origin."
+    },
+    {
+      "rule_id": "RAC-02",
+      "name": "Dog Whistles / Coded Language",
+      "pattern_type": "contextual",
+      "patterns": [
+        "urban crime",
+        "inner city",
+        "certain communities",
+        "those neighborhoods",
+        "cultural enrichment",
+        "traditional values under attack",
+        "protecting our way of life",
+        "real Americans",
+        "real Australians",
+        "our kind of people",
+        "heritage not hate",
+        "you know what I mean"
+      ],
+      "severity": "high",
+      "explanation": "Uses superficially neutral language that carries discriminatory meaning to an in-group audience. The speaker maintains plausible deniability ('I never mentioned race') while the target audience receives the intended prejudicial message. Look for geographically or culturally coded terms that consistently proxy for a specific racial or ethnic group in context."
+    },
+    {
+      "rule_id": "RAC-03",
+      "name": "Stereotype Reinforcement",
+      "pattern_type": "semantic",
+      "patterns": [
+        "typical of them",
+        "you know how those people drive",
+        "they're good at math but",
+        "they can't help it",
+        "it's just their way",
+        "they're naturally more",
+        "they're not as",
+        "no offense but they tend to",
+        "statistically they",
+        "I'm not racist but"
+      ],
+      "severity": "high",
+      "explanation": "Reinforces group stereotypes — positive or negative — as though they are factual descriptions rather than prejudicial generalizations. 'Positive' stereotypes ('good at math') are still reductive and deny individuality. The disclaimer 'I'm not racist but' almost always precedes a racist statement. Look for group-level behavioral claims presented as common knowledge."
+    },
+    {
+      "rule_id": "RAC-04",
+      "name": "Othering / Us-vs-Them Framing",
+      "pattern_type": "semantic",
+      "patterns": [
+        "us versus them",
+        "our country, our rules",
+        "they don't belong here",
+        "go back to where you came from",
+        "they're taking our",
+        "they're replacing us",
+        "this is our land",
+        "they're not one of us",
+        "outsiders",
+        "they'll never assimilate",
+        "they refuse to integrate"
+      ],
+      "severity": "high",
+      "explanation": "Divides humanity into an in-group ('us', 'our') and an out-group ('them', 'those') with the out-group framed as intruders, threats, or incompatible. The framing positions the out-group as fundamentally different and unwelcome. Look for possessive language about shared spaces ('our country', 'our jobs') combined with displacement narratives."
+    },
+    {
+      "rule_id": "RAC-05",
+      "name": "Racial / Ethnic Scapegoating",
+      "pattern_type": "semantic",
+      "patterns": [
+        "they're the reason",
+        "ever since they arrived",
+        "before they came here",
+        "they're ruining",
+        "they're destroying our",
+        "they're the cause of",
+        "this wouldn't happen if",
+        "look what they've done to",
+        "crime went up because",
+        "the economy was better before"
+      ],
+      "severity": "high",
+      "explanation": "Blames a racial, ethnic, or religious group for economic, social, or cultural problems. Complex systemic issues are reduced to the presence of a scapegoat group. The 'before/after' narrative implies removal of the group would solve the problem. Look for causal claims linking a group's presence to societal decline without evidence or controlling for other factors."
+    },
+    {
+      "rule_id": "RAC-06",
+      "name": "Pseudo-Scientific Racism",
+      "pattern_type": "semantic",
+      "patterns": [
+        "IQ differences between races",
+        "genetically predisposed",
+        "biologically inferior",
+        "evolutionary differences between",
+        "certain races are more",
+        "racial hierarchy",
+        "race realism",
+        "human biodiversity",
+        "bell curve",
+        "cognitive differences between populations"
+      ],
+      "severity": "high",
+      "explanation": "Wraps racial prejudice in the language of science, genetics, or evolutionary biology to give it false legitimacy. Modern genetics has thoroughly debunked fixed racial hierarchies. Look for biological or genetic claims about group intelligence, temperament, or capability that cite race as a causal variable. 'Race realism' and 'human biodiversity' are contemporary rebrands of scientific racism."
+    },
+    {
+      "rule_id": "RAC-07",
+      "name": "Religious Intolerance / Anti-Faith Bigotry",
+      "pattern_type": "semantic",
+      "patterns": [
+        "they all worship",
+        "their religion teaches them to",
+        "it's a violent religion",
+        "a peaceful religion wouldn't",
+        "they want sharia",
+        "crusade against",
+        "godless",
+        "heathen",
+        "infidel",
+        "their beliefs are barbaric",
+        "they're a cult"
+      ],
+      "severity": "high",
+      "explanation": "Reduces an entire faith and its billions of adherents to its most extreme elements, or characterizes an entire religion as inherently violent, primitive, or incompatible with civilization. Look for sweeping claims about what 'their religion teaches' that cherry-pick extremist interpretations and present them as mainstream doctrine."
+    },
+    {
+      "rule_id": "RAC-08",
+      "name": "Tokenism / Exception Framing",
+      "pattern_type": "linguistic",
+      "patterns": [
+        "one of the good ones",
+        "not like the rest of them",
+        "you're different from",
+        "I have friends who are",
+        "my best friend is",
+        "some of my best friends",
+        "you're a credit to your",
+        "for one of them you're",
+        "they're not like the others"
+      ],
+      "severity": "medium",
+      "explanation": "Uses a single individual as proof of non-prejudice while maintaining the stereotype about the group. 'You're one of the good ones' simultaneously compliments the individual and condemns everyone else in their group. The token's acceptability is conditional on being 'unlike' their group. Look for compliments that are backhanded — praising an individual BY insulting their group."
+    },
+    {
+      "rule_id": "RAC-09",
+      "name": "Historical Revisionism / Denial",
+      "pattern_type": "semantic",
+      "patterns": [
+        "slavery wasn't that bad",
+        "they were better off",
+        "it's been exaggerated",
+        "that was a long time ago",
+        "get over it",
+        "it didn't happen",
+        "the numbers are inflated",
+        "both sides committed",
+        "history is written by the victors",
+        "they should just move on"
+      ],
+      "severity": "high",
+      "explanation": "Minimizes, denies, or reframes historical atrocities (slavery, genocide, colonialism, internment) to downplay ongoing systemic effects. 'Get over it' dismisses generational trauma. 'Both sides' creates false equivalence between oppressor and oppressed. Look for minimization of documented historical events, victim-blaming, or demands that affected groups stop discussing ongoing consequences."
+    },
+    {
+      "rule_id": "RAC-10",
+      "name": "Gender / Sexuality Prejudice",
+      "pattern_type": "semantic",
+      "patterns": [
+        "that's not natural",
+        "a real man wouldn't",
+        "a woman's place",
+        "boys will be boys",
+        "they're just confused",
+        "it's just a phase",
+        "they're grooming",
+        "protect the children from",
+        "the gay agenda",
+        "traditional family values",
+        "God made them male and female"
+      ],
+      "severity": "high",
+      "explanation": "Delegitimizes people based on gender identity or sexual orientation using nature arguments, predator framing, or religious authority. 'Protecting children' is frequently weaponized to frame LGBTQ+ people as inherent threats. Look for the conflation of identity with danger, the use of 'natural' as a moral judgment, and the framing of existence as an 'agenda'."
+    },
+    {
+      "rule_id": "RAC-11",
+      "name": "Disability Prejudice / Ableism",
+      "pattern_type": "linguistic",
+      "patterns": [
+        "that's so retarded",
+        "what are you, blind",
+        "are you deaf",
+        "confined to a wheelchair",
+        "suffers from",
+        "wheelchair-bound",
+        "handicapped",
+        "special needs",
+        "differently abled",
+        "they can't contribute",
+        "a burden on society",
+        "not capable of"
+      ],
+      "severity": "medium",
+      "explanation": "Uses disability as an insult, frames disabled people as burdens, or reduces people to their condition. 'Suffers from' and 'confined to' center the disability as defining tragedy rather than one aspect of a person. Using disability terms as casual insults ('that's so retarded') normalizes the equation of disability with worthlessness."
+    }
+  ],
+  "hit_conditions": {
+    "min_pattern_matches": 2,
+    "confidence_weight": 1.2
+  },
+  "model_behavior": {
+    "inject_as": "system_prompt",
+    "priority": 7
+  }
+}

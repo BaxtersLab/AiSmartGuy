@@ -1,0 +1,35 @@
+# ─── Rust / Cargo build artifacts ──────────────────────────────
+/target
+**/target/
+
+# ─── Tauri (regenerated at build time) ─────────────────────────
+/src-tauri/gen/schemas/
+
+# ─── Local models & large binaries (NEVER commit) ──────────────
+*.gguf
+*.GGUF
+*.bin
+*.safetensors
+*.onnx
+
+# ─── Native runtime binaries (llama.cpp lives in ~/.aismartguy) ─
+*.exe
+*.dll
+
+# ─── Books / generated reports (avoid committing copyrighted PDFs) ─
+# Sample PDFs you DO want tracked must be added with: git add -f path.pdf
+*.pdf
+
+# ─── OS / editor cruft ─────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
+__pycache__/
+
+# ─── Internal module instruction blocks (build IP — keep private) ──
+/aismartguy modules/
+/update_packages/MODULE_SLOT_INSTRUCTIONS.md
+/update_packages/nlp_extraction_prompt.txt

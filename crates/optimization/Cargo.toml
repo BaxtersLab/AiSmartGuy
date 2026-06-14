@@ -1,0 +1,10 @@
+[package]
+name = "optimization"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+utils = { path = "../utils" }
+logging = { path = "../logging" }
+error_system = { path = "../error_system" }
+manifest = { path = "../manifest" }

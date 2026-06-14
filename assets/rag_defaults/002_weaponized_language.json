@@ -1,0 +1,305 @@
+{
+  "packet_id": 2,
+  "category": "weaponized_language",
+  "description": "Detect language engineered to coerce, shame, silence, or psychologically control the reader or a referenced target. These patterns go beyond poor argument — they are tools of interpersonal or institutional power abuse.",
+  "version": "1.0",
+  "rules": [
+    {
+      "rule_id": "WPN-01",
+      "name": "Guilt-Tripping / Shame Weaponization",
+      "pattern_type": "semantic",
+      "patterns": [
+        "after everything I've done",
+        "you should be ashamed",
+        "how could you do this to",
+        "is this how you repay",
+        "I can't believe you would",
+        "you of all people",
+        "I thought you were better than this",
+        "shame on you",
+        "you should know better",
+        "and this is the thanks I get"
+      ],
+      "severity": "high",
+      "explanation": "Uses guilt or shame as a lever to control behavior. The speaker positions themselves as the wronged party and the target as morally deficient. The goal is compliance through emotional debt, not resolution through dialogue. Look for appeals to obligation that bypass the actual merits of the disagreement."
+    },
+    {
+      "rule_id": "WPN-02",
+      "name": "Gaslighting / Reality Denial",
+      "pattern_type": "semantic",
+      "patterns": [
+        "that never happened",
+        "you're imagining things",
+        "you're being too sensitive",
+        "that's not what I said",
+        "you're remembering it wrong",
+        "I never said that",
+        "you're making things up",
+        "you're overreacting",
+        "that's all in your head",
+        "you're twisting my words",
+        "I think you need help"
+      ],
+      "severity": "high",
+      "explanation": "Systematically denies the target's perception of reality to make them doubt their own memory, judgment, or sanity. The pattern is: target states experience → speaker flatly denies it → target is framed as confused or unstable. Repeated exposure erodes the target's self-trust. Look for blanket denials paired with characterizations of the target as irrational."
+    },
+    {
+      "rule_id": "WPN-03",
+      "name": "Silencing / Discourse Shutdown",
+      "pattern_type": "linguistic",
+      "patterns": [
+        "you wouldn't understand",
+        "it's not up for debate",
+        "end of discussion",
+        "I don't want to hear it",
+        "that's just the way it is",
+        "drop it",
+        "this conversation is over",
+        "I'm not going to argue",
+        "enough",
+        "you don't get a say in this",
+        "because I said so"
+      ],
+      "severity": "high",
+      "explanation": "Shuts down dialogue through authority, dismissal, or refusal to engage. The target's right to question, object, or contribute is revoked. Unlike ending a genuinely unproductive conversation, silencing is unilateral and often deployed the moment the speaker faces a point they cannot counter. Look for flat refusals to engage that come at the moment of challenge, not after genuine deliberation."
+    },
+    {
+      "rule_id": "WPN-04",
+      "name": "Threats / Intimidation",
+      "pattern_type": "semantic",
+      "patterns": [
+        "you'll regret this",
+        "there will be consequences",
+        "you don't want to go there",
+        "remember what happened last time",
+        "don't push me",
+        "you have no idea what I'm capable of",
+        "I'll make sure everyone knows",
+        "you'll be sorry",
+        "be very careful",
+        "think very carefully about your next move"
+      ],
+      "severity": "high",
+      "explanation": "Implicit or explicit threats designed to produce compliance through fear. The threatened consequences may be social (exposure, reputation damage), professional (firing, demotion), relational (abandonment), or left deliberately vague to maximize anxiety. Look for future-tense warnings where the speaker positions themselves as the agent of the consequence."
+    },
+    {
+      "rule_id": "WPN-05",
+      "name": "Obligation / Loyalty Weaponization",
+      "pattern_type": "semantic",
+      "patterns": [
+        "if you really loved me",
+        "a good mother would",
+        "a good father would",
+        "a real friend would",
+        "you owe me",
+        "after all I've sacrificed",
+        "I gave up everything for",
+        "any decent person would",
+        "if you were loyal",
+        "I've always been there for you"
+      ],
+      "severity": "high",
+      "explanation": "Weaponizes love, loyalty, duty, or sacrifice to coerce compliance. The target's identity (as partner, parent, friend) is held hostage — comply or lose the identity label. The actual request is never evaluated on merit; it's wrapped in an identity test. Look for conditional identity statements: 'if you were really X, you would Y.'"
+    },
+    {
+      "rule_id": "WPN-06",
+      "name": "Identity / Character Assassination",
+      "pattern_type": "semantic",
+      "patterns": [
+        "you're just like your",
+        "people like you always",
+        "that's so typical of you",
+        "you always do this",
+        "you never change",
+        "there's something wrong with you",
+        "you're impossible",
+        "this is who you really are",
+        "everyone can see what you are",
+        "you'll never be"
+      ],
+      "severity": "high",
+      "explanation": "Attacks the target's core identity rather than a specific behavior. 'You forgot the appointment' (behavior) vs 'you're irresponsible' (identity). Identity attacks are global, stable, and internal — they frame the flaw as permanent and inherent. Look for 'you ARE' statements (identity) where 'you DID' statements (behavior) would be factual."
+    },
+    {
+      "rule_id": "WPN-07",
+      "name": "Isolation Language",
+      "pattern_type": "semantic",
+      "patterns": [
+        "no one else would put up with you",
+        "you're lucky I'm still here",
+        "everyone agrees with me",
+        "ask anyone",
+        "nobody else cares about you",
+        "who else do you have",
+        "they all think the same",
+        "I'm the only one who",
+        "without me you'd have nothing",
+        "no one will believe you"
+      ],
+      "severity": "high",
+      "explanation": "Cuts off the target's support network by asserting that everyone else agrees with the speaker or that nobody else would tolerate the target. Creates dependency by framing the speaker as the only source of acceptance. Look for claims about unanimous agreement, assertions that the target is universally disliked, or statements that frame the speaker as the target's sole ally."
+    },
+    {
+      "rule_id": "WPN-08",
+      "name": "Martyrdom / Weaponized Victimhood",
+      "pattern_type": "semantic",
+      "patterns": [
+        "I guess I'm always the bad guy",
+        "nothing I do is ever good enough",
+        "I sacrifice everything and",
+        "fine, I'll just suffer in silence",
+        "I guess my feelings don't matter",
+        "go ahead, blame me for everything",
+        "I'm always wrong apparently",
+        "don't worry about me, I'll manage",
+        "no one appreciates what I do",
+        "I'll just keep giving"
+      ],
+      "severity": "medium",
+      "explanation": "The speaker preemptively positions themselves as the victim to deflect accountability and shift the emotional burden onto the target. The target must now comfort the speaker instead of addressing the original issue. Look for performative suffering that redirects the conversation from the speaker's behavior to the speaker's feelings."
+    },
+    {
+      "rule_id": "WPN-09",
+      "name": "Weaponized Questions",
+      "pattern_type": "linguistic",
+      "patterns": [
+        "why are you getting defensive",
+        "what's wrong with you",
+        "why can't you just",
+        "why do you always have to",
+        "what is your problem",
+        "why do you make everything about",
+        "are you even listening",
+        "do you even care",
+        "how many times do I have to",
+        "why would you even think that"
+      ],
+      "severity": "medium",
+      "explanation": "Questions designed not to seek information but to frame the target as deficient. 'Why are you getting defensive?' presupposes defensiveness and frames calm disagreement as pathological. Any answer validates the embedded accusation. Look for questions that contain their own verdict — the 'question' is actually a judgment wearing a question mark."
+    },
+    {
+      "rule_id": "WPN-10",
+      "name": "Minimizing / Invalidation",
+      "pattern_type": "linguistic",
+      "patterns": [
+        "it's not that bad",
+        "you're blowing this out of proportion",
+        "other people have it worse",
+        "get over it",
+        "stop being so dramatic",
+        "it was just a joke",
+        "you take everything too seriously",
+        "lighten up",
+        "I was only kidding",
+        "can't you take a joke"
+      ],
+      "severity": "medium",
+      "explanation": "Dismisses or downgrades the target's legitimate experience or emotional response. The speaker unilaterally decides what the target is 'allowed' to feel. 'It was just a joke' after causing harm retroactively reframes the act as harmless and the target as humorless. Look for one person dictating the severity of another person's experience."
+    },
+    {
+      "rule_id": "WPN-11",
+      "name": "Conditional Affection / Love Bombing",
+      "pattern_type": "semantic",
+      "patterns": [
+        "I love you but",
+        "if you cared about me you'd",
+        "I'm only saying this because I love you",
+        "this hurts me more than it hurts you",
+        "I wouldn't have to do this if you'd just",
+        "it's for your own good",
+        "I'm doing this because I care",
+        "you'll thank me later",
+        "one day you'll understand",
+        "I only want what's best for you"
+      ],
+      "severity": "high",
+      "explanation": "Uses affection, care, or love as a transactional lever. Affection is offered conditionally — comply and receive love, resist and it's withdrawn. 'I'm only saying this because I love you' frames the attack as care, making the target feel ungrateful for objecting. Look for affection language immediately adjacent to demands or criticism."
+    },
+    {
+      "rule_id": "WPN-12",
+      "name": "DARVO (Deny, Attack, Reverse Victim/Offender)",
+      "pattern_type": "contextual",
+      "patterns": [
+        "I never did that, and you're the one who",
+        "actually, I'm the victim here",
+        "you're the abusive one",
+        "I'm not the problem, you are",
+        "you drove me to it",
+        "look what you made me do",
+        "if you hadn't provoked me",
+        "you brought this on yourself",
+        "I wouldn't have had to if you hadn't",
+        "you're attacking me right now"
+      ],
+      "severity": "high",
+      "explanation": "A three-stage manipulation: (1) Deny the behavior, (2) Attack the person who called it out, (3) Reverse roles so the offender becomes the victim. The original target is reframed as the aggressor. Look for sequences where an accusation is met with denial immediately followed by a counter-accusation that flips who is harming whom."
+    },
+    {
+      "rule_id": "WPN-13",
+      "name": "Catastrophizing for Control",
+      "pattern_type": "semantic",
+      "patterns": [
+        "you're ruining everything",
+        "this is going to destroy",
+        "you've made the biggest mistake",
+        "you're tearing this family apart",
+        "everything is falling apart because of you",
+        "this will end badly",
+        "you've done irreparable damage",
+        "there's no coming back from this",
+        "you've destroyed any chance of",
+        "nothing will ever be the same"
+      ],
+      "severity": "medium",
+      "explanation": "Inflates the consequences of the target's action to apocalyptic proportions to paralyze them with guilt or fear. A minor disagreement becomes 'destroying the family.' The exaggerated stakes make the target retreat to compliance to avoid the catastrophe. Look for permanence language ('irreparable', 'never', 'destroyed') applied to recoverable situations."
+    },
+    {
+      "rule_id": "WPN-14",
+      "name": "Dehumanizing Language",
+      "pattern_type": "linguistic",
+      "patterns": [
+        "those people",
+        "these animals",
+        "they're not like us",
+        "barely human",
+        "savages",
+        "vermin",
+        "cockroaches",
+        "parasites",
+        "infest",
+        "plague on society",
+        "subhuman",
+        "filth"
+      ],
+      "severity": "high",
+      "explanation": "Strips humanity from a target group using animal, insect, disease, or filth metaphors. Dehumanization is the linguistic precursor to justifying violence, exclusion, or rights removal. Once a group is 'vermin' rather than people, normal moral constraints feel less applicable. Look for biological or pest metaphors applied to human groups."
+    },
+    {
+      "rule_id": "WPN-15",
+      "name": "Weaponized Generosity / Debt Creation",
+      "pattern_type": "semantic",
+      "patterns": [
+        "after all I've given you",
+        "I've done so much for you",
+        "remember when I helped you",
+        "you wouldn't be where you are without me",
+        "I put you where you are",
+        "who paid for",
+        "I took you in when",
+        "I was there when no one else was",
+        "everything you have is because of me",
+        "don't forget what I did for you"
+      ],
+      "severity": "medium",
+      "explanation": "Past favors or generosity are retroactively converted into debts that demand repayment through compliance. What appeared to be freely given now has strings attached. Look for historical kindness cited not in gratitude but as leverage — the subtext is 'you owe me, therefore you must comply.'"
+    }
+  ],
+  "hit_conditions": {
+    "min_pattern_matches": 2,
+    "confidence_weight": 1.1
+  },
+  "model_behavior": {
+    "inject_as": "system_prompt",
+    "priority": 2
+  }
+}

@@ -1,0 +1,242 @@
+{
+  "packet_id": 9,
+  "category": "nlp_techniques",
+  "description": "Detect Neuro-Linguistic Programming techniques used to influence, persuade, or manipulate the reader outside conscious awareness.",
+  "version": "1.0",
+  "rules": [
+    {
+      "rule_id": "NLP-01",
+      "name": "Presuppositions",
+      "pattern_type": "linguistic",
+      "patterns": [
+        "when you realize",
+        "after you've",
+        "once you understand",
+        "how quickly will you",
+        "before you decide",
+        "as you begin to",
+        "now that you know",
+        "since you already",
+        "the moment you"
+      ],
+      "severity": "high",
+      "explanation": "Temporal adverbs (when, after, once, before, since) embedded in subordinate clauses smuggle in assumptions the reader must accept to parse the sentence. The presupposed conclusion bypasses critical evaluation."
+    },
+    {
+      "rule_id": "NLP-02",
+      "name": "Embedded Commands",
+      "pattern_type": "linguistic",
+      "patterns": [
+        "you don't have to",
+        "I wonder if you could",
+        "you might find yourself",
+        "you can begin to",
+        "you may already",
+        "I wouldn't tell you to",
+        "don't think about",
+        "it's not necessary to"
+      ],
+      "severity": "high",
+      "explanation": "Imperatives disguised inside negations, hedges, or polite wrappers. The conscious mind processes the negation while the subconscious registers the command. Pattern: negation/hedge + imperative verb phrase."
+    },
+    {
+      "rule_id": "NLP-03",
+      "name": "Pacing and Leading",
+      "pattern_type": "contextual",
+      "patterns": [
+        "you're reading this",
+        "you're sitting here",
+        "as you can see",
+        "we all know that",
+        "obviously",
+        "of course",
+        "clearly",
+        "and that means",
+        "which is why",
+        "so naturally"
+      ],
+      "severity": "medium",
+      "explanation": "Establishes rapport by stating 2-3 undeniable truths (pacing), then bridges to a subjective claim (leading). The transition words 'and that means', 'which is why', 'so naturally' mark the pivot from pace to lead. Look for chains of obvious observations followed by a desired conclusion."
+    },
+    {
+      "rule_id": "NLP-04",
+      "name": "Double Binds / Illusory Choice",
+      "pattern_type": "semantic",
+      "patterns": [
+        "would you prefer to",
+        "whether you choose to",
+        "you can either",
+        "sooner or later",
+        "the only question is when",
+        "it's just a matter of",
+        "now or later",
+        "one way or another"
+      ],
+      "severity": "high",
+      "explanation": "Presents two or more options that all converge on the same outcome. The reader feels agency (choice) while the actual decision has been removed. Both branches of the 'or' lead to compliance."
+    },
+    {
+      "rule_id": "NLP-05",
+      "name": "Nominalizations",
+      "pattern_type": "linguistic",
+      "patterns": [
+        "the decision",
+        "the understanding",
+        "this process",
+        "your awareness",
+        "the realization",
+        "the transformation",
+        "the journey",
+        "the experience",
+        "your growth",
+        "the change"
+      ],
+      "severity": "low",
+      "explanation": "Verbs/processes frozen into abstract nouns. 'You are deciding' becomes 'the decision'. This deletes agency (who decided?), hides the process, and makes dynamic events seem like fixed things. High frequency of nominalizations = deliberately vague language (Milton Model)."
+    },
+    {
+      "rule_id": "NLP-06",
+      "name": "Lost Performatives",
+      "pattern_type": "linguistic",
+      "patterns": [
+        "it's important to",
+        "it's good that",
+        "it's well known",
+        "it's obvious that",
+        "it's natural to",
+        "it's only right",
+        "it's been proven",
+        "it's common knowledge"
+      ],
+      "severity": "medium",
+      "explanation": "Value judgments stated without attribution. Who says it's important? By whom was it proven? The source is deleted, making the claim appear as universal truth rather than one person's opinion."
+    },
+    {
+      "rule_id": "NLP-07",
+      "name": "Mind Reading",
+      "pattern_type": "semantic",
+      "patterns": [
+        "I know you're thinking",
+        "part of you already knows",
+        "you're probably wondering",
+        "you must be feeling",
+        "deep down you know",
+        "you sense that",
+        "something inside you",
+        "your unconscious mind"
+      ],
+      "severity": "high",
+      "explanation": "Claims knowledge of the reader's internal state without evidence. Creates an illusion of connection and understanding while actually projecting desired thoughts/feelings onto the reader. If the projection is close enough, the reader feels 'understood' and drops resistance."
+    },
+    {
+      "rule_id": "NLP-08",
+      "name": "Cause-Effect Linkage",
+      "pattern_type": "linguistic",
+      "patterns": [
+        "makes you feel",
+        "causes you to",
+        "will lead you to",
+        "allows you to",
+        "enables you to",
+        "seeing this will",
+        "hearing this makes",
+        "reading this causes"
+      ],
+      "severity": "medium",
+      "explanation": "Asserts a causal relationship between an external stimulus and an internal state without justification. 'X makes you Y' bypasses the reader's agency in choosing their own response. The false causation is stated as mechanical fact."
+    },
+    {
+      "rule_id": "NLP-09",
+      "name": "Anchoring / State Elicitation",
+      "pattern_type": "contextual",
+      "patterns": [
+        "remember a time when",
+        "think back to",
+        "recall how it felt",
+        "imagine that feeling",
+        "feel that sensation",
+        "notice the warmth",
+        "let yourself feel",
+        "bring back that memory"
+      ],
+      "severity": "medium",
+      "explanation": "Evokes a specific emotional state through memory or imagination, then links it to the current topic. The sequence is: elicit positive state -> associate state with product/idea/action. The emotional charge transfers to the target concept without logical connection."
+    },
+    {
+      "rule_id": "NLP-10",
+      "name": "Future Pacing",
+      "pattern_type": "semantic",
+      "patterns": [
+        "imagine how you'll feel when",
+        "picture yourself having",
+        "see yourself in the future",
+        "how will it feel when",
+        "looking back you'll",
+        "a year from now",
+        "when you look back on this",
+        "in the future you'll realize"
+      ],
+      "severity": "medium",
+      "explanation": "Projects the reader into a desired future state to create emotional commitment before rational evaluation. By pre-experiencing the outcome, the reader's brain treats it as partially real, making the decision feel like confirming something already experienced rather than choosing something new."
+    },
+    {
+      "rule_id": "NLP-11",
+      "name": "Tag Questions",
+      "pattern_type": "linguistic",
+      "patterns": [
+        "isn't it",
+        "don't you think",
+        "wouldn't you agree",
+        "can't you see",
+        "right?",
+        "you know?",
+        "isn't that so",
+        "don't you feel"
+      ],
+      "severity": "low",
+      "explanation": "Appended to statements to transform assertions into social compliance requests. Disagreeing with a tag question feels socially awkward, so the reader defaults to agreement. Converts a one-way claim into a pseudo-dialogue that pressures consent."
+    },
+    {
+      "rule_id": "NLP-12",
+      "name": "Trance / Hypnotic Language",
+      "pattern_type": "contextual",
+      "patterns": [
+        "deeper and deeper",
+        "more and more",
+        "relax and let",
+        "allow yourself to",
+        "drifting",
+        "flowing",
+        "effortlessly",
+        "comfortably",
+        "gently",
+        "as you continue to",
+        "with each breath"
+      ],
+      "severity": "high",
+      "explanation": "Repetitive, rhythmic, sensory-rich language designed to induce a light trance state where critical thinking is reduced. Stacking soft sensory verbs (drifting, flowing) with progressive intensifiers (deeper and deeper, more and more) lowers analytical resistance."
+    },
+    {
+      "rule_id": "NLP-13",
+      "name": "Technique Stacking / Escalation",
+      "pattern_type": "contextual",
+      "patterns": [
+        "and as you realize",
+        "and because you already know",
+        "which means you can now",
+        "and the more you understand, the more you",
+        "that's right, and"
+      ],
+      "severity": "high",
+      "explanation": "Multiple NLP techniques chained in a single passage. Presupposition + embedded command + future pace in sequence. The connectives 'and', 'which means', 'because' chain the techniques so each one leverages the compliance created by the previous one. Stacking 3+ techniques in one paragraph is a strong manipulation signal."
+    }
+  ],
+  "hit_conditions": {
+    "min_pattern_matches": 2,
+    "confidence_weight": 1.2
+  },
+  "model_behavior": {
+    "inject_as": "system_prompt",
+    "priority": 9
+  }
+}

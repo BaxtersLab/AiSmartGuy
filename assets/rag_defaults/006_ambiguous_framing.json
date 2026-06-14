@@ -1,0 +1,153 @@
+{
+  "packet_id": 6,
+  "category": "ambiguous_framing",
+  "description": "Detect vague, directionless, or evidence-free framing that expects the reader to fill in the blanks, accept claims on faith, or sympathize without justification.",
+  "version": "1.0",
+  "rules": [
+    {
+      "rule_id": "AMB-01",
+      "name": "Open-Ended Claims / Dangling Assertions",
+      "pattern_type": "linguistic",
+      "patterns": [
+        "it raises questions about",
+        "one has to wonder",
+        "it makes you think",
+        "there are concerns about",
+        "some might say",
+        "it's worth considering",
+        "it remains to be seen",
+        "draw your own conclusions",
+        "you have to ask yourself",
+        "people are talking about"
+      ],
+      "severity": "medium",
+      "explanation": "Plants a suspicion or implication without committing to a specific claim. The speaker avoids making a falsifiable statement — instead they 'just ask questions' or 'raise concerns', leaving the reader to construct the accusation themselves. The speaker gets the effect of an accusation without the accountability of making one."
+    },
+    {
+      "rule_id": "AMB-02",
+      "name": "Meandering Thought / Directionless Padding",
+      "pattern_type": "contextual",
+      "patterns": [
+        "at the end of the day",
+        "when all is said and done",
+        "in a very real sense",
+        "it goes without saying",
+        "as it were",
+        "in terms of",
+        "with respect to the fact that",
+        "it is what it is",
+        "having said that",
+        "be that as it may",
+        "in the final analysis",
+        "the fact of the matter is"
+      ],
+      "severity": "low",
+      "explanation": "Filler phrases that create the illusion of substance without advancing the argument. The text sounds authoritative but says nothing — remove these phrases and the paragraph loses no meaning. High density of these phrases signals the writer is padding space rather than making a point. Look for paragraphs where the connective tissue outweighs the actual content."
+    },
+    {
+      "rule_id": "AMB-03",
+      "name": "Evidence-Free Assertions",
+      "pattern_type": "semantic",
+      "patterns": [
+        "it's obvious that",
+        "clearly",
+        "needless to say",
+        "it goes without saying",
+        "anyone can see that",
+        "the truth is",
+        "the fact is",
+        "make no mistake",
+        "let's be honest",
+        "the reality is",
+        "let me be clear",
+        "without question"
+      ],
+      "severity": "high",
+      "explanation": "Asserts a claim as self-evident to avoid providing evidence. The stronger the assertion language ('obviously', 'clearly', 'without question'), the more likely the claim actually needs support. These phrases function as a substitute for proof — they signal 'believe this because I said it forcefully'. If the claim were truly obvious, the assertion word would be unnecessary."
+    },
+    {
+      "rule_id": "AMB-04",
+      "name": "Self-Victimization Framing",
+      "pattern_type": "semantic",
+      "patterns": [
+        "I'm being persecuted",
+        "they're out to get me",
+        "I'm the target of",
+        "they want to silence me",
+        "they're trying to destroy",
+        "I've been unfairly treated",
+        "they don't want you to know",
+        "I'm being censored",
+        "they're afraid of what I have to say",
+        "I'm paying the price for speaking the truth",
+        "they can't handle the truth",
+        "the establishment is against me"
+      ],
+      "severity": "high",
+      "explanation": "Frames the speaker as a martyr or victim of persecution to preemptively discredit any criticism. If critics are 'persecutors', then criticism itself becomes evidence of a conspiracy rather than a response to the speaker's claims. The victimhood narrative makes the speaker untouchable — any pushback 'proves' the persecution. Look for persecution claims that appear right before or after a contested claim."
+    },
+    {
+      "rule_id": "AMB-05",
+      "name": "Weasel Words / Hedge Stacking",
+      "pattern_type": "linguistic",
+      "patterns": [
+        "some people say",
+        "many believe",
+        "it is said that",
+        "there is reason to believe",
+        "allegedly",
+        "reportedly",
+        "it has been suggested",
+        "sources indicate",
+        "according to some",
+        "there are those who think"
+      ],
+      "severity": "medium",
+      "explanation": "Attributes claims to anonymous, unverifiable sources to appear balanced while injecting unsubstantiated content. 'Some people say X' introduces X into the reader's mind without anyone taking responsibility for it. The writer can later deny endorsing it — 'I was just reporting what others say.' Look for unnamed plurals ('some', 'many', 'critics') serving as the sole source."
+    },
+    {
+      "rule_id": "AMB-06",
+      "name": "Unfalsifiable / Kafka Trap Framing",
+      "pattern_type": "semantic",
+      "patterns": [
+        "if you disagree that proves",
+        "your denial only confirms",
+        "the fact that you're defensive shows",
+        "if you don't see it you're part of the problem",
+        "only someone who is guilty would",
+        "you wouldn't be upset if it weren't true",
+        "your reaction says it all",
+        "silence is complicity"
+      ],
+      "severity": "high",
+      "explanation": "Constructs a claim where any response — agreement, disagreement, or silence — confirms the accusation. Agreeing proves the claim. Denying it proves you're defensive (therefore guilty). Saying nothing proves complicity. The claim becomes unfalsifiable — there is no possible response that counts as innocent. Look for framing where the accused literally cannot win."
+    },
+    {
+      "rule_id": "AMB-07",
+      "name": "Implied Conclusion / Strategic Vagueness",
+      "pattern_type": "contextual",
+      "patterns": [
+        "I'm not saying, but",
+        "I'm just saying",
+        "take that for what it's worth",
+        "make of that what you will",
+        "isn't it interesting that",
+        "isn't it convenient that",
+        "I'll just leave this here",
+        "I'll let you decide",
+        "curious timing",
+        "coincidence?"
+      ],
+      "severity": "medium",
+      "explanation": "Implies a damning conclusion while explicitly declining to state it. 'I'm not saying X, but...' says X. 'Curious timing' implies conspiracy. The speaker gets the persuasive effect of the implication while maintaining plausible deniability — 'I never actually said that.' Look for rhetorical questions and conspiratorial framing that stop just short of a direct claim."
+    }
+  ],
+  "hit_conditions": {
+    "min_pattern_matches": 2,
+    "confidence_weight": 1.0
+  },
+  "model_behavior": {
+    "inject_as": "system_prompt",
+    "priority": 6
+  }
+}

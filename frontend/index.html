@@ -1,0 +1,1486 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AiSmartGuy</title>
+  <link rel="stylesheet" href="main.css">
+</head>
+<body>
+  <div class="app-shell">
+    <main class="app-body">
+      <img class="shelf-banner" id="shelfBanner" src="assets/books-on-shelf.png" alt="AiSmartGuy">
+
+      <!-- LOADING STATE -->
+      <div class="loader-card" id="loaderCard">
+        <div class="brain-wrap">
+          <img class="brain-icon throb" id="brainIcon" src="assets/brain.png" alt="">
+          <div class="spinner" id="spinner"></div>
+        </div>
+        <div class="status-wrap">
+          <p class="status-label" id="statusLabel">Initializing…</p>
+          <div class="progress-track">
+            <div class="progress-fill" id="progressFill"></div>
+          </div>
+          <p class="progress-pct" id="progressPct">0%</p>
+        </div>
+      </div>
+
+      <!-- READY STATE -->
+      <div class="ready-card hidden" id="readyCard">
+        <img class="ready-brain" src="assets/brain.png" alt="">
+        <p class="ready-title">AiSmartGuy is Ready</p>
+        <p class="ready-sub">Drag &amp; drop a PDF onto this window to begin.</p>
+      </div>
+
+      <!-- CONFIG FOUND STATE -->
+      <div class="config-card hidden" id="configCard">
+        <div class="config-check">&#10003;</div>
+        <p class="config-title">AiSmartGuy Configuration Found</p>
+        <p class="config-sub">This PDF contains a saved analysis configuration.</p>
+        <button class="config-btn" id="configContinueBtn">Continue to Model Loader</button>
+        <button class="config-btn config-btn-alt" id="configUseBtn">Use this Configuration on a new PDF</button>
+        <div class="config-drop-prompt hidden" id="configDropPrompt">
+          <p class="config-drop-text">Now drop the new PDF you'd like to analyse.</p>
+        </div>
+      </div>
+
+      <!-- MODEL LOADER SCREEN -->
+      <div class="model-loader-screen hidden" id="modelLoaderScreen">
+        <p class="screen-title">Model Loader</p>
+
+        <!-- PDF info bar (shown after PDF load) -->
+        <div class="pdf-info-bar hidden" id="pdfInfoBar">
+          <span id="pdfInfoText"></span>
+        </div>
+
+        <!-- LANE 1: Model Library folder (display / browse) -->
+        <div class="ml-lane">
+          <div class="ml-lane-header">
+            <span class="ml-lane-num">1</span>
+            <span class="ml-lane-label">Model Library Folder</span>
+          </div>
+          <div class="ml-lane-body">
+            <input type="text" class="ml-path-input" id="mlLibraryPath" readonly
+                   placeholder="Loading…">
+          </div>
+        </div>
+
+        <!-- LANE 2: Model 1 — unbiased reasoning -->
+        <div class="ml-lane" id="mlLane2">
+          <div class="ml-lane-header">
+            <span class="ml-lane-num">2</span>
+            <span class="ml-lane-label">Model 1</span>
+            <span class="ml-lane-note">choose unbiased reasoning model</span>
+          </div>
+          <div class="ml-lane-body">
+            <select class="ml-select" id="mlSelect2">
+              <option value="">(select model subfolder)</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- LANE 3: Model 2 — unbiased reasoning -->
+        <div class="ml-lane" id="mlLane3">
+          <div class="ml-lane-header">
+            <span class="ml-lane-num">3</span>
+            <span class="ml-lane-label">Model 2</span>
+            <span class="ml-lane-note">choose unbiased reasoning model</span>
+          </div>
+          <div class="ml-lane-body">
+            <select class="ml-select" id="mlSelect3">
+              <option value="">(select model subfolder)</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- LANE 4: Model 3 — unbiased reasoning -->
+        <div class="ml-lane" id="mlLane4">
+          <div class="ml-lane-header">
+            <span class="ml-lane-num">4</span>
+            <span class="ml-lane-label">Model 3</span>
+            <span class="ml-lane-note">choose unbiased reasoning model</span>
+          </div>
+          <div class="ml-lane-body">
+            <select class="ml-select" id="mlSelect4">
+              <option value="">(select model subfolder)</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- LANE 5: Fusion — lightweight reasoning -->
+        <div class="ml-lane" id="mlLane5">
+          <div class="ml-lane-header">
+            <span class="ml-lane-num">5</span>
+            <span class="ml-lane-label">Fusion</span>
+            <span class="ml-lane-note">choose lightweight reasoning model</span>
+          </div>
+          <div class="ml-lane-body">
+            <select class="ml-select" id="mlSelect5">
+              <option value="">(select model subfolder)</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- GATING MODE -->
+        <div class="ml-gating">
+          <span class="ml-gating-label">Mode:</span>
+          <div class="ml-gating-options">
+            <label class="ml-mode-option">
+              <input type="radio" name="gatingMode" value="1"> <strong>Mode 1</strong> — one unbiased model only <em>(Lane 2)</em>
+            </label>
+            <label class="ml-mode-option">
+              <input type="radio" name="gatingMode" value="2"> <strong>Mode 2</strong> — one unbiased + one reasoning for review <em>(Lane 2 &amp; 5)</em>
+            </label>
+            <label class="ml-mode-option">
+              <input type="radio" name="gatingMode" value="3"> <strong>Mode 3</strong> — two unbiased + one reasoning <em>(Lane 2, 3 &amp; 5)</em>
+            </label>
+            <label class="ml-mode-option">
+              <input type="radio" name="gatingMode" value="full" checked> <strong>Full</strong> — all 4 models <em>(Lane 2, 3, 4 &amp; 5)</em> — 10 runs needed to enable optimized
+            </label>
+          </div>
+          <div class="ml-gating-actions">
+            <button class="ml-btn ml-btn-primary ml-btn-start" id="mlAdvancedBtn">Advanced Settings</button>
+            <button class="ml-btn ml-btn-lock" id="mlLockBtn">Lock for 10 Runs</button>
+          </div>
+        </div>
+
+        <!-- BOTTOM BAR -->
+        <div class="ml-bottom-bar">
+          <div class="ml-bottom-left">
+            <button class="ml-btn ml-btn-primary" id="mlFetchHfBtn">Fetch HF GGUF Model</button>
+            <button class="ml-btn" id="mlOpenLibBtn">Open Library 📂</button>
+            <button class="ml-btn ml-btn-opt" id="mlOptBtn" disabled>Use Optimized Configuration</button>
+            <button class="ml-btn ml-btn-eject" id="mlEjectBtn" disabled>Eject / Reset</button>
+          </div>
+          <div class="ml-bottom-right">
+            <span class="ml-run-counter" id="mlRunCounter">Runs: 0 / 10</span>
+            <button class="ml-btn ml-btn-primary ml-btn-start" id="mlStartRunBtn" disabled>Begin Run ▶</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- HF DOWNLOAD SCREEN -->
+      <div class="hf-download-screen hidden" id="hfDownloadScreen">
+        <p class="screen-title">Download GGUF from HuggingFace</p>
+
+        <div class="hf-input-row">
+          <input type="text" class="hf-url-input" id="hfUrlInput"
+                 placeholder="Paste HuggingFace GGUF download link here…"
+                 spellcheck="false" autocomplete="off">
+          <button class="ml-btn ml-btn-primary" id="hfDownloadBtn">Download</button>
+        </div>
+
+        <div class="hf-partials" id="hfPartials" style="display:none;">
+          <p class="hf-partials-title">Incomplete Downloads</p>
+          <div class="hf-partials-list" id="hfPartialsList"></div>
+        </div>
+
+        <div class="hf-terminal" id="hfTerminal">
+          <p class="hf-terminal-line hf-terminal-dim">Waiting for download…</p>
+        </div>
+
+        <div class="hf-bottom-bar">
+          <button class="ml-btn hf-back-btn" id="hfBackBtn">&larr; Back to Model Loader</button>
+          <button class="ml-btn" id="hfOpenLibBtn">Open Library 📂</button>
+        </div>
+      </div>
+
+      <!-- ADVANCED SETTINGS SCREEN -->
+      <div class="advanced-settings-screen hidden" id="advancedSettingsScreen">
+        <div class="adv-grid">
+
+          <!-- QUADRANT 1: TOP-LEFT — Resource Throttle -->
+          <div class="adv-quad" id="advQuad1">
+            <p class="adv-quad-title">Resource Throttle</p>
+            <p class="adv-ctx-note">Controls how much GPU &amp; CPU the app uses. Lower = safer for hardware, but slower.</p>
+            <div class="adv-vram-slider-row">
+              <span class="adv-gpu-label">Throttle</span>
+              <input type="range" class="adv-vram-slider" id="advThrottleSlider" min="25" max="100" step="5" value="75">
+              <span class="adv-vram-pct" id="advThrottlePct">75%</span>
+              <button class="adv-lock-btn" id="advThrottleLockBtn" title="Lock throttle so it persists across runs">&#128274;</button>
+            </div>
+          </div>
+
+          <!-- QUADRANT 2: TOP-RIGHT — Hot Rod Tuner Link -->
+          <div class="adv-quad" id="advQuad2">
+            <p class="adv-quad-title">Hot Rod Tuner</p>
+            <button class="adv-btn hrt-link-btn" id="hrtLinkBtn">Link to Hot Rod Tuner</button>
+            <p class="hrt-status" id="hrtStatus"></p>
+          </div>
+
+          <!-- QUADRANT 3: BOTTOM-LEFT — Context Size -->
+          <div class="adv-quad" id="advQuad3">
+            <p class="adv-quad-title">Context Window</p>
+            <p class="adv-ctx-note">Applies to all model lanes. Larger = more text per chunk, but uses more VRAM.</p>
+            <div class="adv-ctx-options" id="advCtxOptions">
+              <label class="adv-ctx-option">
+                <input type="radio" name="ctxSize" value="4096" disabled> <strong>4K</strong> <span class="adv-ctx-detail">too small with RAG</span>
+              </label>
+              <label class="adv-ctx-option">
+                <input type="radio" name="ctxSize" value="8192"> <strong>8K</strong> <span class="adv-ctx-detail">~1 GB</span>
+              </label>
+              <label class="adv-ctx-option">
+                <input type="radio" name="ctxSize" value="16384" checked> <strong>16K</strong> <span class="adv-ctx-detail">~2 GB — recommended</span>
+              </label>
+              <label class="adv-ctx-option">
+                <input type="radio" name="ctxSize" value="32768"> <strong>32K</strong> <span class="adv-ctx-detail">~4 GB</span>
+              </label>
+              <label class="adv-ctx-option">
+                <input type="radio" name="ctxSize" value="65536"> <strong>64K</strong> <span class="adv-ctx-detail">~8 GB</span>
+              </label>
+              <label class="adv-ctx-option">
+                <input type="radio" name="ctxSize" value="131072"> <strong>128K</strong> <span class="adv-ctx-detail">~16 GB — high-end GPU</span>
+              </label>
+            </div>
+          </div>
+
+          <!-- QUADRANT 4: BOTTOM-RIGHT — Reserved -->
+          <div class="adv-quad adv-quad-reserved" id="advQuad4">
+            <p class="adv-quad-title">Update Pack Slot</p>
+            <p class="adv-quad-placeholder">Reserved for future expansion</p>
+          </div>
+
+        </div>
+
+        <div class="adv-bottom-bar">
+          <button class="adv-btn" id="advBackBtn">&larr; Back to Model Loader</button>
+        </div>
+      </div>
+
+      <!-- PROCESSING SCREEN — shown during model inference -->
+      <div class="processing-screen hidden" id="processingScreen">
+        <img class="proc-shelf" src="assets/books-on-shelf.png" alt="">
+        <div class="proc-brain-wrap">
+          <img class="brain-icon throb" id="procBrain" src="assets/brain.png" alt="">
+          <div class="spinner" id="procSpinner"></div>
+        </div>
+        <div class="proc-status-wrap">
+          <p class="proc-label" id="procLabel">AiSmartGuy is reading the PDF</p>
+          <div class="progress-track">
+            <div class="progress-fill" id="procFill"></div>
+          </div>
+          <p class="progress-pct" id="procPct">0%</p>
+        </div>
+        <div class="proc-complete hidden" id="procComplete">
+          <p class="proc-done-text">Report Complete</p>
+          <p class="proc-done-path" id="procDonePath"></p>
+          <button class="proc-open-btn" id="procOpenBtn">Open Output Folder</button>
+          <button class="proc-back-model-btn" id="procBackModelBtn">&#9664; Back to Model Loader</button>
+        </div>
+        <div class="proc-terminal" id="procTerminal">
+          <p class="proc-terminal-line proc-terminal-dim">Waiting for inference…</p>
+        </div>
+        <button class="proc-back-btn" id="procBackBtn">&#9664; Back</button>
+      </div>
+
+      <!-- ERROR STATE -->
+      <div class="error-card hidden" id="errorCard">
+        <p class="error-title">&#9888; Something went wrong</p>
+        <p class="error-msg" id="errorMsg"></p>
+        <div class="error-btn-row">
+          <button class="error-back hidden" id="errorBackBtn">&#9664; Back</button>
+          <button class="error-retry" onclick="location.reload()">Retry</button>
+        </div>
+      </div>
+
+    </main>
+
+    <!-- Drop overlay — outside cards so it's always reachable -->
+    <div class="drop-overlay hidden" id="dropOverlay">
+      <p class="drop-text">Drop PDF here</p>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      var fill      = document.getElementById('progressFill');
+      var pct       = document.getElementById('progressPct');
+      var label     = document.getElementById('statusLabel');
+      var brain     = document.getElementById('brainIcon');
+      var spinner   = document.getElementById('spinner');
+      var loaderCard = document.getElementById('loaderCard');
+      var readyCard  = document.getElementById('readyCard');
+      var configCard = document.getElementById('configCard');
+      var modelLoaderScreen = document.getElementById('modelLoaderScreen');
+      var hfDownloadScreen = document.getElementById('hfDownloadScreen');
+      var errorCard  = document.getElementById('errorCard');
+      var errorMsg   = document.getElementById('errorMsg');
+      var shelfBanner = document.getElementById('shelfBanner');
+
+      function setProgress(percent, message) {
+        fill.style.width  = percent + '%';
+        pct.textContent   = Math.round(percent) + '%';
+        label.textContent = message;
+      }
+
+      function showReady() {
+        brain.classList.remove('throb');
+        spinner.style.display = 'none';
+        loaderCard.classList.add('hidden');
+        configCard.classList.add('hidden');
+        modelLoaderScreen.classList.add('hidden');
+        hfDownloadScreen.classList.add('hidden');
+        readyCard.classList.remove('hidden');
+      }
+
+      function showError(msg) {
+        brain.classList.remove('throb');
+        spinner.style.display = 'none';
+        loaderCard.classList.add('hidden');
+        configCard.classList.add('hidden');
+        modelLoaderScreen.classList.add('hidden');
+        hfDownloadScreen.classList.add('hidden');
+        errorMsg.textContent = msg;
+        errorCard.classList.remove('hidden');
+      }
+
+      // Show spinner immediately
+      spinner.style.display = 'block';
+
+      // ── Wire real Tauri events if available ───────────────────────
+      // Watchdog: if no progress reaches 100% within 120 s, show an error.
+      var watchdog = setTimeout(function () {
+        showError('Backend did not respond within 120 seconds.');
+      }, 120000);
+
+      if (window.__TAURI__ && window.__TAURI__.event) {
+        window.__TAURI__.event.listen('pipeline-progress', function (event) {
+          var p = event.payload;
+          if (!p) return;
+          setProgress(p.percent, p.message);
+          if (p.percent >= 100) {
+            clearTimeout(watchdog);
+            setTimeout(showReady, 800);
+          }
+        }).catch(function (err) {
+          clearTimeout(watchdog);
+          showError('Failed to connect to backend: ' + err);
+        });
+      } else {
+        // ── Fallback demo for browser preview (no Tauri) ─────────────
+        var steps = [
+          { p: 10, msg: 'Scanning internal folders…' },
+          { p: 30, msg: 'Loading manifest…' },
+          { p: 55, msg: 'Initialising RAG engine…' },
+          { p: 75, msg: 'Loading models…' },
+          { p: 90, msg: 'Running optimisation pass…' },
+          { p: 100, msg: 'Ready.' },
+        ];
+        var i = 0;
+        function demoStep() {
+          if (i >= steps.length) { clearTimeout(watchdog); showReady(); return; }
+          var s = steps[i++];
+          setProgress(s.p, s.msg);
+          setTimeout(demoStep, 900);
+        }
+        setTimeout(demoStep, 400);
+      }
+    })();
+
+    // ── PDF loading (drag-drop) + Model Loader + HF Download ────
+    (function () {
+      var readyCard        = document.getElementById('readyCard');
+      var loaderCard       = document.getElementById('loaderCard');
+      var configCard       = document.getElementById('configCard');
+      var configContinueBtn = document.getElementById('configContinueBtn');
+      var configUseBtn     = document.getElementById('configUseBtn');
+      var configDropPrompt = document.getElementById('configDropPrompt');
+      var modelLoaderScreen = document.getElementById('modelLoaderScreen');
+      var hfDownloadScreen = document.getElementById('hfDownloadScreen');
+      var advancedSettingsScreen = document.getElementById('advancedSettingsScreen');
+      var dropOverlay      = document.getElementById('dropOverlay');
+      var fill             = document.getElementById('progressFill');
+      var pct              = document.getElementById('progressPct');
+      var label            = document.getElementById('statusLabel');
+      var spinner          = document.getElementById('spinner');
+      var brain            = document.getElementById('brainIcon');
+      var errorCard        = document.getElementById('errorCard');
+      var errorMsg         = document.getElementById('errorMsg');
+
+      // Lane elements
+      var mlLibraryPath    = document.getElementById('mlLibraryPath');
+      var mlSelect2        = document.getElementById('mlSelect2');
+      var mlSelect3        = document.getElementById('mlSelect3');
+      var mlSelect4        = document.getElementById('mlSelect4');
+      var mlSelect5        = document.getElementById('mlSelect5');
+      var mlLane2          = document.getElementById('mlLane2');
+      var mlLane3          = document.getElementById('mlLane3');
+      var mlLane4          = document.getElementById('mlLane4');
+      var mlLane5          = document.getElementById('mlLane5');
+
+      // Bottom bar
+      var mlFetchHfBtn     = document.getElementById('mlFetchHfBtn');
+      var mlOpenLibBtn     = document.getElementById('mlOpenLibBtn');
+      var mlOptBtn         = document.getElementById('mlOptBtn');
+      var mlStartRunBtn    = document.getElementById('mlStartRunBtn');
+      var mlRunCounter     = document.getElementById('mlRunCounter');
+      var mlEjectBtn       = document.getElementById('mlEjectBtn');
+
+      // HF Download elements
+      var hfUrlInput       = document.getElementById('hfUrlInput');
+      var hfDownloadBtn    = document.getElementById('hfDownloadBtn');
+      var hfTerminal       = document.getElementById('hfTerminal');
+      var hfBackBtn        = document.getElementById('hfBackBtn');
+      var hfOpenLibBtn     = document.getElementById('hfOpenLibBtn');
+      var hfPartials       = document.getElementById('hfPartials');
+      var hfPartialsList   = document.getElementById('hfPartialsList');
+
+      // Advanced Settings elements
+      var mlAdvancedBtn    = document.getElementById('mlAdvancedBtn');
+      var advBackBtn       = document.getElementById('advBackBtn');
+      var advThrottleSlider = document.getElementById('advThrottleSlider');
+      var advThrottlePct   = document.getElementById('advThrottlePct');
+      var advThrottleLockBtn = document.getElementById('advThrottleLockBtn');
+      var throttleLocked   = false;
+
+      // ── Restore persisted Advanced Settings from localStorage ───
+      (function restoreAdvSettings() {
+        try {
+          var saved = JSON.parse(localStorage.getItem('asg_adv_settings') || '{}');
+          if (saved.ts && (Date.now() - saved.ts > 30 * 24 * 60 * 60 * 1000)) {
+            localStorage.removeItem('asg_adv_settings');
+            saved = {};
+          }
+          // Migrate: old vramPct → throttlePct (interpret as throttle %)
+          var tPct = saved.throttlePct || saved.vramPct || '75';
+          advThrottleSlider.value = tPct;
+          advThrottlePct.textContent = tPct + '%';
+          if (saved.throttleLocked) {
+            throttleLocked = true;
+            advThrottleLockBtn.textContent = '\uD83D\uDD12';
+            advThrottleLockBtn.classList.add('locked');
+            advThrottleSlider.disabled = true;
+          }
+          if (saved.ctxSize) {
+            var ctxRadio = document.querySelector('input[name="ctxSize"][value="' + saved.ctxSize + '"]');
+            if (ctxRadio && !ctxRadio.disabled) ctxRadio.checked = true;
+          }
+        } catch (e) {}
+      })();
+
+      function saveAdvSettings() {
+        try {
+          localStorage.setItem('asg_adv_settings', JSON.stringify({
+            throttlePct: advThrottleSlider.value,
+            throttleLocked: throttleLocked,
+            ctxSize: getSelectedCtxSize(),
+            ts: Date.now()
+          }));
+        } catch (e) {}
+      }
+
+      // Save whenever context size changes
+      document.querySelectorAll('input[name="ctxSize"]').forEach(function (r) {
+        r.addEventListener('change', saveAdvSettings);
+      });
+
+      // Throttle slider — live readout
+      advThrottleSlider.addEventListener('input', function () {
+        advThrottlePct.textContent = advThrottleSlider.value + '%';
+      });
+      advThrottleSlider.addEventListener('change', function () {
+        saveAdvSettings();
+      });
+
+      // Lock toggle
+      advThrottleLockBtn.addEventListener('click', function () {
+        throttleLocked = !throttleLocked;
+        if (throttleLocked) {
+          advThrottleLockBtn.textContent = '\uD83D\uDD12';
+          advThrottleLockBtn.classList.add('locked');
+          advThrottleSlider.disabled = true;
+        } else {
+          advThrottleLockBtn.textContent = '\uD83D\uDD13';
+          advThrottleLockBtn.classList.remove('locked');
+          advThrottleSlider.disabled = false;
+        }
+        saveAdvSettings();
+      });
+
+      // HRT Link elements
+      var hrtLinkBtn       = document.getElementById('hrtLinkBtn');
+      var hrtStatus        = document.getElementById('hrtStatus');
+      var hrtLinked        = false;
+
+      // Processing screen elements
+      var processingScreen = document.getElementById('processingScreen');
+      var procBrain        = document.getElementById('procBrain');
+      var procSpinner      = document.getElementById('procSpinner');
+      var procLabel        = document.getElementById('procLabel');
+      var procFill         = document.getElementById('procFill');
+      var procPct          = document.getElementById('procPct');
+      var procComplete     = document.getElementById('procComplete');
+      var procDonePath     = document.getElementById('procDonePath');
+      var procOpenBtn      = document.getElementById('procOpenBtn');
+      var procBackModelBtn = document.getElementById('procBackModelBtn');
+      var procBackBtn      = document.getElementById('procBackBtn');
+      var procTerminal     = document.getElementById('procTerminal');
+      var runOutputPath    = '';  // populated on run completion
+      var runActive        = false; // true while a run is in progress or just completed
+      var runState         = null;  // { percent, message, outputPath, done } — persisted across nav
+
+      var waitingForNewPdf = false;
+      var hfDownloadActive = false;
+      var hfLogBuffer = [];
+      var runCount = 0;
+      var currentMode = 'full';
+      var modeLocked = false;
+      var optimizedReady = false;      // true once 10 runs completed
+      var lockedModelSnapshot = null;  // model selections at lock time
+      var llamaInstalled = false;      // set true when llama-cli detected
+
+      // ── Llama.cpp bootstrap ────────────────────────────────────
+      function checkLlama() {
+        if (!window.__TAURI__ || !window.__TAURI__.core) return;
+        window.__TAURI__.core.invoke('cmd_detect_llama')
+          .then(function (path) {
+            if (path) {
+              llamaInstalled = true;
+              console.log('[llama] detected: ' + path);
+            } else {
+              console.log('[llama] not found — will install when first run is triggered');
+            }
+          })
+          .catch(function () {});
+      }
+
+      function installLlama() {
+        if (!window.__TAURI__ || !window.__TAURI__.core) return;
+        return window.__TAURI__.core.invoke('cmd_install_llama')
+          .then(function (path) {
+            llamaInstalled = true;
+            console.log('[llama] installed: ' + path);
+            return path;
+          });
+      }
+
+      // Detect-only on startup (no GPU queries, no downloads)
+      checkLlama();
+
+      // ── Screen management ──────────────────────────────────────
+      function hideAll() {
+        readyCard.classList.add('hidden');
+        loaderCard.classList.add('hidden');
+        configCard.classList.add('hidden');
+        modelLoaderScreen.classList.add('hidden');
+        hfDownloadScreen.classList.add('hidden');
+        advancedSettingsScreen.classList.add('hidden');
+        processingScreen.classList.add('hidden');
+        errorCard.classList.add('hidden');
+        shelfBanner.classList.remove('hidden');
+      }
+
+      function showLoader(msg) {
+        hideAll();
+        loaderCard.classList.remove('hidden');
+        brain.classList.add('throb');
+        spinner.style.display = 'block';
+        fill.style.width = '5%';
+        pct.textContent = '5%';
+        label.textContent = msg || 'Loading PDF…';
+      }
+
+      function showConfig() {
+        hideAll();
+        configCard.classList.remove('hidden');
+        configDropPrompt.classList.add('hidden');
+        waitingForNewPdf = false;
+      }
+
+      function showModelLoader() {
+        hideAll();
+        shelfBanner.classList.add('hidden');
+        modelLoaderScreen.classList.remove('hidden');
+        waitingForNewPdf = false;
+        loadLibraryPath();
+        populateLaneDropdowns();
+        applyGatingMode();
+        updateRunCounter();
+      }
+
+      function showHfDownload() {
+        hideAll();
+        shelfBanner.classList.add('hidden');
+        hfDownloadScreen.classList.remove('hidden');
+        if (hfDownloadActive) {
+          // Replay buffered log lines so progress is visible
+          hfTerminal.innerHTML = '';
+          hfLogBuffer.forEach(function (entry) {
+            var p = document.createElement('p');
+            p.className = 'hf-terminal-line' + (entry.err ? ' hf-terminal-err' : '');
+            p.textContent = entry.text;
+            hfTerminal.appendChild(p);
+          });
+          hfTerminal.scrollTop = hfTerminal.scrollHeight;
+        } else {
+          hfUrlInput.value = '';
+          hfTerminal.innerHTML = '<p class="hf-terminal-line hf-terminal-dim">Waiting for download\u2026</p>';
+        }
+        scanPartials();
+      }
+      function showAdvancedSettings() {
+        hideAll();
+        shelfBanner.classList.add('hidden');
+        advancedSettingsScreen.classList.remove('hidden');
+      }
+
+      function showProcessing(msg) {
+        hideAll();
+        shelfBanner.classList.add('hidden');
+        processingScreen.classList.remove('hidden');
+        // If there's existing run state, restore it instead of resetting
+        if (runState) {
+          procFill.style.width = runState.percent + '%';
+          procPct.textContent  = runState.percent + '%';
+          procLabel.textContent = runState.message || '';
+          runOutputPath = runState.outputPath || '';
+          if (runState.done) {
+            procBrain.classList.remove('throb');
+            procSpinner.style.display = 'none';
+            procLabel.textContent = '';
+            procComplete.classList.remove('hidden');
+            if (runState.outputPath) {
+              procDonePath.textContent = 'Stored to: ' + runState.outputPath;
+            }
+          } else {
+            procBrain.classList.add('throb');
+            procSpinner.style.display = 'block';
+            procComplete.classList.add('hidden');
+          }
+        } else {
+          procBrain.classList.add('throb');
+          procSpinner.style.display = 'block';
+          procFill.style.width = '0%';
+          procPct.textContent = '0%';
+          procLabel.textContent = msg || 'AiSmartGuy is reading the PDF…';
+          procComplete.classList.add('hidden');
+          runOutputPath = '';
+        }
+      }
+
+      function setRunActive(active) {
+        runActive = active;
+        if (active) {
+          mlStartRunBtn.textContent = 'Running — Show Progress';
+          mlStartRunBtn.classList.add('run-active');
+          mlStartRunBtn.disabled = false;
+        } else {
+          mlStartRunBtn.textContent = 'Begin Run ▶';
+          mlStartRunBtn.classList.remove('run-active');
+        }
+      }
+      function showReady2() {
+        hideAll();
+        readyCard.classList.remove('hidden');
+        waitingForNewPdf = false;
+      }
+
+      function showError2(msg, isPdfLoad) {
+        hideAll();
+        errorMsg.textContent = msg;
+        var backBtn = document.getElementById('errorBackBtn');
+        if (isPdfLoad) {
+          backBtn.classList.add('hidden');
+        } else {
+          backBtn.classList.remove('hidden');
+        }
+        errorCard.classList.remove('hidden');
+        waitingForNewPdf = false;
+      }
+
+      // ── Lane & library helpers ─────────────────────────────────
+      function loadLibraryPath() {
+        if (!window.__TAURI__ || !window.__TAURI__.core) return;
+        window.__TAURI__.core.invoke('cmd_get_model_library_path')
+          .then(function (p) { mlLibraryPath.value = p; })
+          .catch(function () {});
+      }
+
+      function populateSelect(sel, subfolders) {
+        sel.innerHTML = '';
+        var blank = document.createElement('option');
+        blank.value = '';
+        blank.textContent = '(select model subfolder)';
+        sel.appendChild(blank);
+
+        if (!subfolders || subfolders.length === 0) return;
+        subfolders.forEach(function (sf) {
+          var opt = document.createElement('option');
+          opt.value = sf.path;
+          var count = sf.gguf_files ? sf.gguf_files.length : 0;
+          opt.textContent = sf.name + ' (' + count + ' gguf file' + (count !== 1 ? 's' : '') + ')';
+          sel.appendChild(opt);
+        });
+      }
+
+      function populateLaneDropdowns() {
+        if (!window.__TAURI__ || !window.__TAURI__.core) return;
+        window.__TAURI__.core.invoke('cmd_list_library_subfolders', { baseDir: '' })
+          .then(function (subs) {
+            populateSelect(mlSelect2, subs);
+            populateSelect(mlSelect3, subs);
+            populateSelect(mlSelect4, subs);
+            populateSelect(mlSelect5, subs);
+            restoreModelConfig(subs);
+            updateStartBtn();
+          })
+          .catch(function (err) {
+            console.error('list subfolders failed:', err);
+          });
+      }
+
+      // ── Persist model selections + gating mode ─────────────────
+      function saveModelConfig() {
+        try {
+          var cfg = {
+            lane2: mlSelect2.value,
+            lane3: mlSelect3.value,
+            lane4: mlSelect4.value,
+            lane5: mlSelect5.value,
+            mode:  currentMode,
+            ts:    Date.now()
+          };
+          localStorage.setItem('asg_model_config', JSON.stringify(cfg));
+          console.log('[asg] saved model config', cfg);
+        } catch (e) { console.error('[asg] saveModelConfig failed', e); }
+      }
+
+      function restoreModelConfig(subs) {
+        try {
+          var raw = localStorage.getItem('asg_model_config');
+          console.log('[asg] restoreModelConfig raw:', raw);
+          var saved = JSON.parse(raw || '{}');
+          if (!saved.ts) { console.log('[asg] no saved ts, skipping restore'); return; }
+          if (Date.now() - saved.ts > 30 * 24 * 60 * 60 * 1000) {
+            localStorage.removeItem('asg_model_config');
+            console.log('[asg] config expired, removed');
+            return;
+          }
+          // Build a lookup from lowercase path → actual option value
+          var pathMap = {};
+          (subs || []).forEach(function (s) { pathMap[s.path.toLowerCase()] = s.path; });
+          console.log('[asg] pathMap keys:', Object.keys(pathMap));
+          console.log('[asg] saved lanes:', saved.lane2, saved.lane3, saved.lane4, saved.lane5);
+
+          function restoreSelect(sel, savedVal) {
+            if (!savedVal) return;
+            var match = pathMap[savedVal.toLowerCase()];
+            console.log('[asg] restore', sel.id, savedVal, '->', match || 'NO MATCH');
+            if (match) sel.value = match;
+          }
+          restoreSelect(mlSelect2, saved.lane2);
+          restoreSelect(mlSelect3, saved.lane3);
+          restoreSelect(mlSelect4, saved.lane4);
+          restoreSelect(mlSelect5, saved.lane5);
+
+          if (saved.mode && !modeLocked) {
+            currentMode = saved.mode;
+            var radio = document.querySelector('input[name="gatingMode"][value="' + saved.mode + '"]');
+            if (radio) radio.checked = true;
+            applyGatingMode();
+          }
+          updateStartBtn();
+        } catch (e) { console.error('[asg] restoreModelConfig failed', e); }
+      }
+
+
+
+      // ── Gating mode ───────────────────────────────────────────
+      function applyGatingMode() {
+        // Which lanes are active per mode
+        var active = {
+          '1':    [mlLane2],
+          '2':    [mlLane2, mlLane5],
+          '3':    [mlLane2, mlLane3, mlLane5],
+          'full': [mlLane2, mlLane3, mlLane4, mlLane5]
+        };
+        var allLanes = [mlLane2, mlLane3, mlLane4, mlLane5];
+        var activeLanes = active[currentMode] || allLanes;
+
+        allLanes.forEach(function (lane) {
+          if (activeLanes.indexOf(lane) >= 0) {
+            lane.classList.remove('ml-lane-disabled');
+            lane.querySelector('select').disabled = false;
+          } else {
+            lane.classList.add('ml-lane-disabled');
+            lane.querySelector('select').disabled = true;
+          }
+        });
+        updateStartBtn();
+      }
+
+      var modeRadios = document.querySelectorAll('input[name="gatingMode"]');
+      var mlLockBtn = document.getElementById('mlLockBtn');
+
+      modeRadios.forEach(function (r) {
+        r.addEventListener('change', function () {
+          if (modeLocked) {
+            // Revert — mode is locked
+            document.querySelector('input[name="gatingMode"][value="full"]').checked = true;
+            return;
+          }
+          currentMode = this.value;
+          applyGatingMode();
+          saveModelConfig();
+        });
+      });
+
+      mlLockBtn.addEventListener('click', function () {
+        if (modeLocked) return;
+        // Snapshot current model selections before locking
+        lockedModelSnapshot = {
+          lane2: mlSelect2.value,
+          lane3: mlSelect3.value,
+          lane4: mlSelect4.value,
+          lane5: mlSelect5.value
+        };
+        modeLocked = true;
+        currentMode = 'full';
+        document.querySelector('input[name="gatingMode"][value="full"]').checked = true;
+        applyGatingMode();
+        // Disable all mode radios
+        modeRadios.forEach(function (r) { r.disabled = true; });
+        // Disable lane selects so models can't be changed mid-lock
+        [mlSelect2, mlSelect3, mlSelect4, mlSelect5].forEach(function (s) { s.disabled = true; });
+        mlLockBtn.textContent = 'Locked (' + runCount + '/10)';
+        mlLockBtn.disabled = true;
+      });
+
+      // ── Start button readiness ─────────────────────────────────
+      function getActiveLaneSelects() {
+        var map = {
+          '1':    [mlSelect2],
+          '2':    [mlSelect2, mlSelect5],
+          '3':    [mlSelect2, mlSelect3, mlSelect5],
+          'full': [mlSelect2, mlSelect3, mlSelect4, mlSelect5]
+        };
+        return map[currentMode] || [mlSelect2, mlSelect3, mlSelect4, mlSelect5];
+      }
+
+      function updateStartBtn() {
+        // While a run is active, the button is always enabled (it navigates
+        // to the progress screen rather than starting a new run).
+        if (runActive) {
+          mlStartRunBtn.disabled = false;
+          return;
+        }
+        var sels = getActiveLaneSelects();
+        var allPicked = sels.every(function (s) { return s.value !== ''; });
+        mlStartRunBtn.disabled = !allPicked;
+      }
+
+      [mlSelect2, mlSelect3, mlSelect4, mlSelect5].forEach(function (s) {
+        s.addEventListener('change', function () {
+          updateStartBtn();
+          checkModelChange();
+          saveModelConfig();
+        });
+      });
+
+      // ── Run counter & optimized ────────────────────────────────
+      function updateRunCounter() {
+        mlRunCounter.textContent = 'Runs: ' + runCount + ' / 10';
+        if (modeLocked) {
+          mlLockBtn.textContent = 'Locked (' + runCount + '/10)';
+        }
+        if (runCount >= 10 && !optimizedReady) {
+          optimizedReady = true;
+          mlOptBtn.disabled = false;
+          mlEjectBtn.disabled = false;
+          if (modeLocked) {
+            // Unlock mode selection — 10 runs complete
+            modeLocked = false;
+            modeRadios.forEach(function (r) { r.disabled = false; });
+            [mlSelect2, mlSelect3, mlSelect4, mlSelect5].forEach(function (s) { s.disabled = false; });
+            mlLockBtn.textContent = 'Complete ✓';
+          }
+        }
+        // Keep eject button enabled whenever optimized is ready
+        mlEjectBtn.disabled = !optimizedReady;
+      }
+
+      mlOptBtn.addEventListener('click', function () {
+        if (!optimizedReady) return;
+        mlOptBtn.classList.toggle('ml-btn-opt-active');
+      });
+
+      // ── Eject / Reset confirmation ─────────────────────────────
+      function resetOptimizationState() {
+        runCount = 0;
+        optimizedReady = false;
+        modeLocked = false;
+        lockedModelSnapshot = null;
+        mlOptBtn.disabled = true;
+        mlOptBtn.classList.remove('ml-btn-opt-active');
+        mlEjectBtn.disabled = true;
+        mlLockBtn.textContent = 'Lock for 10 Runs';
+        mlLockBtn.disabled = false;
+        modeRadios.forEach(function (r) { r.disabled = false; });
+        [mlSelect2, mlSelect3, mlSelect4, mlSelect5].forEach(function (s) { s.disabled = false; });
+        updateRunCounter();
+      }
+
+      mlEjectBtn.addEventListener('click', function () {
+        if (!optimizedReady) return;
+        // Build and show confirmation overlay
+        var overlay = document.createElement('div');
+        overlay.className = 'eject-confirm-overlay';
+        var box = document.createElement('div');
+        box.className = 'eject-confirm-box';
+        var msg = document.createElement('p');
+        msg.textContent = 'Are you sure? This will eject your optimized configuration and reset the full mode run counter.';
+        var btns = document.createElement('div');
+        btns.className = 'eject-confirm-btns';
+        var yesBtn = document.createElement('button');
+        yesBtn.className = 'eject-confirm-yes';
+        yesBtn.textContent = 'Yes, Eject';
+        var noBtn = document.createElement('button');
+        noBtn.className = 'eject-confirm-no';
+        noBtn.textContent = 'Cancel';
+
+        yesBtn.addEventListener('click', function () {
+          resetOptimizationState();
+          document.body.removeChild(overlay);
+        });
+        noBtn.addEventListener('click', function () {
+          document.body.removeChild(overlay);
+        });
+
+        btns.appendChild(yesBtn);
+        btns.appendChild(noBtn);
+        box.appendChild(msg);
+        box.appendChild(btns);
+        overlay.appendChild(box);
+        document.body.appendChild(overlay);
+      });
+
+      // ── Model change detection ─────────────────────────────────
+      // If models are changed after optimization is earned, auto-reset
+      function checkModelChange() {
+        if (!optimizedReady || !lockedModelSnapshot) return;
+        var current = {
+          lane2: mlSelect2.value,
+          lane3: mlSelect3.value,
+          lane4: mlSelect4.value,
+          lane5: mlSelect5.value
+        };
+        var changed = current.lane2 !== lockedModelSnapshot.lane2 ||
+                      current.lane3 !== lockedModelSnapshot.lane3 ||
+                      current.lane4 !== lockedModelSnapshot.lane4 ||
+                      current.lane5 !== lockedModelSnapshot.lane5;
+        if (changed) {
+          resetOptimizationState();
+        }
+      }
+
+      // ── PDF loading ────────────────────────────────────────────
+      function loadPdf(path) {
+        showLoader('Loading PDF…');
+
+        if (window.__TAURI__ && window.__TAURI__.core) {
+          window.__TAURI__.core.invoke('cmd_load_pdf', { pdfPath: path })
+            .then(function (result) {
+              // Show PDF token/page info and auto-calibrate context
+              if (result && result.estimated_tokens > 0) {
+                var tokens = result.estimated_tokens;
+                var pages  = result.page_count || 0;
+
+                // Context budget constants (must match orchestrator constants)
+                var ragOverhead  = 6800;   // 69 rules across 5 RAG packets
+                var genHeadroom  = 2048;
+                var safety       = 500;
+                var overhead     = ragOverhead + genHeadroom + safety; // ~9348
+
+                // Auto-select context tier: pick the largest available
+                // that still makes sense for the document size.
+                var minCtx       = overhead + 1024; // at least 1K for chapter text
+                var tiers = [8192, 16384, 32768, 65536, 131072];
+                var pick  = 131072; // default to max
+                for (var i = 0; i < tiers.length; i++) {
+                  if (tiers[i] >= minCtx) { pick = tiers[i]; break; }
+                }
+
+                // Estimate chapter passes based on selected context
+                var chapterBudget = pick - overhead;
+                var estChapters = Math.max(1, Math.ceil(tokens / chapterBudget));
+
+                var infoEl = document.getElementById('pdfInfoBar');
+                var txtEl  = document.getElementById('pdfInfoText');
+                txtEl.textContent = '📄 ~' + tokens.toLocaleString() + ' tokens · '
+                                  + pages + ' page' + (pages !== 1 ? 's' : '') + ' · ~'
+                                  + estChapters + ' chapter pass' + (estChapters !== 1 ? 'es' : '')
+                                  + ' at ' + (pick / 1024) + 'K context';
+                infoEl.classList.remove('hidden');
+
+                // Select the radio button
+                var radios = document.querySelectorAll('input[name="ctxSize"]');
+                for (var j = 0; j < radios.length; j++) {
+                  radios[j].checked = (parseInt(radios[j].value, 10) === pick);
+                }
+                saveAdvSettings();
+                console.log('[auto-ctx] tokens=' + tokens + ' pages=' + pages + ' chapters~=' + estChapters + ' → ctx=' + pick);
+              }
+
+              if (result && result.config_found) {
+                showConfig();
+              } else {
+                showModelLoader();
+              }
+            })
+            .catch(function (err) {
+              showError2('Failed to load PDF: ' + err, true);
+            });
+        }
+      }
+
+      function runWithStoredConfig(newPath) {
+        showLoader('Applying stored configuration to new PDF…');
+        waitingForNewPdf = false;
+
+        if (window.__TAURI__ && window.__TAURI__.core) {
+          window.__TAURI__.core.invoke('cmd_run_with_stored_config', { newPdfPath: newPath })
+            .then(function () {})
+            .catch(function (err) {
+              showError2('Failed to run with stored config: ' + err);
+            });
+        }
+      }
+
+      // ── Config card buttons ────────────────────────────────────
+      configContinueBtn.addEventListener('click', function () {
+        showModelLoader();
+      });
+
+      configUseBtn.addEventListener('click', function () {
+        waitingForNewPdf = true;
+        configDropPrompt.classList.remove('hidden');
+      });
+
+      // ── Context size helper ─────────────────────────────────────
+      function getSelectedCtxSize() {
+        var checked = document.querySelector('input[name="ctxSize"]:checked:not(:disabled)');
+        return checked ? parseInt(checked.value, 10) : 16384;
+      }
+
+      // ── Model Loader buttons ───────────────────────────────────
+      mlFetchHfBtn.addEventListener('click', function () {
+        showHfDownload();
+      });
+
+      mlOpenLibBtn.addEventListener('click', function () {
+        if (window.__TAURI__ && window.__TAURI__.core) {
+          window.__TAURI__.core.invoke('cmd_open_model_library').catch(function () {});
+        }
+      });
+
+      mlAdvancedBtn.addEventListener('click', function () {
+        showAdvancedSettings();
+      });
+
+      mlStartRunBtn.addEventListener('click', function () {
+        // If a run is active, navigate to the processing screen
+        if (runActive) {
+          showProcessing();
+          return;
+        }
+        // Start a new run
+        runState = { percent: 0, message: 'Building manifest…', outputPath: '', done: false };
+        setRunActive(true);
+        showProcessing('Building manifest…');
+        // Reset the live terminal
+        procTerminal.innerHTML = '<p class="proc-terminal-line proc-terminal-dim">Waiting for inference…</p>';
+        if (window.__TAURI__ && window.__TAURI__.core) {
+          window.__TAURI__.core.invoke('cmd_begin_run', {
+            mode:  currentMode,
+            lane2: mlSelect2.value,
+            lane3: mlSelect3.value || '',
+            lane4: mlSelect4.value || '',
+            lane5: mlSelect5.value || '',
+            throttlePct: parseInt(advThrottleSlider.value, 10) || 75,
+            ctxSize: getSelectedCtxSize()
+          })
+            .then(function (runId) {
+              runCount++;
+              updateRunCounter();
+              // Processing screen handles the visual transition via run-progress events
+            })
+            .catch(function (err) {
+              setRunActive(false);
+              runState = null;
+              showError2('Begin run failed: ' + err);
+            });
+        }
+      });
+
+      // ── Processing screen: run-progress listener ───────────────
+      if (window.__TAURI__ && window.__TAURI__.event) {
+        window.__TAURI__.event.listen('run-progress', function (event) {
+          var p = event.payload;
+          if (!p) return;
+          var pct_val = Math.round(p.percent);
+
+          // If the pipeline reports llama not installed, auto-install and retry
+          if (p.message && p.message.indexOf('LLAMA_NOT_INSTALLED') !== -1) {
+            procLabel.textContent = 'Installing llama.cpp inference engine…';
+            procFill.style.width = '10%';
+            procPct.textContent = '10%';
+            if (window.__TAURI__.core) {
+              window.__TAURI__.core.invoke('cmd_install_llama')
+                .then(function () {
+                  llamaInstalled = true;
+                  procLabel.textContent = 'llama.cpp installed — restarting run…';
+                  // Re-trigger the run
+                  window.__TAURI__.core.invoke('cmd_begin_run', {
+                    mode:  currentMode,
+                    lane2: mlSelect2.value,
+                    lane3: mlSelect3.value || '',
+                    lane4: mlSelect4.value || '',
+                    lane5: mlSelect5.value || '',
+                    throttlePct: parseInt(advThrottleSlider.value, 10) || 75,
+                    ctxSize: getSelectedCtxSize()
+                  }).catch(function (err2) {
+                    setRunActive(false);
+                    runState = null;
+                    showError2('Retry failed: ' + err2);
+                  });
+                })
+                .catch(function (err) {
+                  setRunActive(false);
+                  runState = null;
+                  showError2('llama.cpp install failed: ' + err);
+                });
+            }
+            return;
+          }
+
+          // Always update persisted state so nav-back can restore
+          runState = {
+            percent: pct_val,
+            message: p.message || '',
+            outputPath: p.output_path || (runState && runState.outputPath) || '',
+            done: p.percent >= 100
+          };
+
+          // Error state: percent 0 with an error/crash message → stop run
+          if (pct_val === 0 && p.message && (p.message.indexOf('error') !== -1 || p.message.indexOf('crash') !== -1 || p.message.indexOf('Pipeline') !== -1)) {
+            setRunActive(false);
+            runState = null;
+            procBrain.classList.remove('throb');
+            procSpinner.style.display = 'none';
+            showError2(p.message);
+            return;
+          }
+
+          // Update the processing screen elements (even if hidden)
+          procFill.style.width = pct_val + '%';
+          procPct.textContent  = pct_val + '%';
+          procLabel.textContent = p.message || '';
+
+          // Mirror orchestrator stage messages into the terminal
+          if (p.message) {
+            var sp = document.createElement('p');
+            sp.className = 'proc-terminal-line proc-terminal-stage';
+            sp.textContent = '[' + pct_val + '%] ' + p.message;
+            // Clear placeholder if still showing
+            if (procTerminal.children.length === 1 && procTerminal.firstChild.classList.contains('proc-terminal-dim')) {
+              procTerminal.innerHTML = '';
+            }
+            procTerminal.appendChild(sp);
+            procTerminal.scrollTop = procTerminal.scrollHeight;
+          }
+
+          if (p.percent >= 100) {
+            // Done — show completion state
+            procBrain.classList.remove('throb');
+            procSpinner.style.display = 'none';
+            procLabel.textContent = '';
+            procComplete.classList.remove('hidden');
+            if (p.output_path) {
+              runOutputPath = p.output_path;
+              procDonePath.textContent = 'Stored to: ' + p.output_path;
+            }
+            // Stop the button pulse but keep it clickable to view results
+            mlStartRunBtn.textContent = 'View Results';
+            mlStartRunBtn.classList.remove('run-active');
+          }
+        });
+      }
+
+      // ── Processing screen: run-log listener (live terminal) ────
+      if (window.__TAURI__ && window.__TAURI__.event) {
+        window.__TAURI__.event.listen('run-log', function (event) {
+          var line = event.payload;
+          if (typeof line !== 'string') return;
+          // On first real line, clear the placeholder
+          if (procTerminal.children.length === 1 && procTerminal.firstChild.classList.contains('proc-terminal-dim')) {
+            procTerminal.innerHTML = '';
+          }
+          var p = document.createElement('p');
+          p.className = 'proc-terminal-line';
+          p.textContent = line;
+          procTerminal.appendChild(p);
+          // Cap at 500 lines to prevent memory bloat
+          while (procTerminal.children.length > 500) {
+            procTerminal.removeChild(procTerminal.firstChild);
+          }
+          procTerminal.scrollTop = procTerminal.scrollHeight;
+        });
+      }
+
+      procOpenBtn.addEventListener('click', function () {
+        if (window.__TAURI__ && window.__TAURI__.core && runOutputPath) {
+          window.__TAURI__.core.invoke('cmd_open_output_folder', { path: runOutputPath })
+            .catch(function () {});
+        }
+        // Reset run state so Begin Run is usable again
+        setRunActive(false);
+        runState = null;
+      });
+
+      procBackBtn.addEventListener('click', function () {
+        showModelLoader();
+      });
+
+      procBackModelBtn.addEventListener('click', function () {
+        setRunActive(false);
+        runState = null;
+        showModelLoader();
+      });
+
+      document.getElementById('errorBackBtn').addEventListener('click', function () {
+        setRunActive(false);
+        runState = null;
+        showModelLoader();
+      });
+
+      // ── Close-request guard: confirm if app is busy ────────────
+      if (window.__TAURI__ && window.__TAURI__.window) {
+        var mainWin = window.__TAURI__.window.getCurrentWindow();
+        mainWin.onCloseRequested(function (event) {
+          var busy = runActive || hfDownloadActive || !loaderCard.classList.contains('hidden');
+          if (busy) {
+            event.preventDefault();
+            var yes = confirm(
+              'Are you sure?\n\nAiSmartGuy is currently working and closing will cancel the current action.'
+            );
+            if (yes) {
+              mainWin.destroy();
+            }
+          }
+        });
+      }
+
+      // ── Advanced Settings buttons ──────────────────────────────
+      advBackBtn.addEventListener('click', function () {
+        showModelLoader();
+      });
+
+      // ── Hot Rod Tuner link ────────────────────────────────────
+      function autoLinkHrt() {
+        if (hrtLinked) return;
+        if (!window.__TAURI__ || !window.__TAURI__.core) return;
+        window.__TAURI__.core.invoke('cmd_link_hrt', { port: 8090 })
+          .then(function () {
+            hrtStatus.textContent = 'HRT Link Successful ✓ (auto)';
+            hrtStatus.className = 'hrt-status hrt-ok';
+            hrtLinked = true;
+            hrtLinkBtn.disabled = true;
+          })
+          .catch(function () {
+            // Silent — HRT not running yet; user can link manually later
+          });
+      }
+
+      // Attempt auto-link once the app is ready
+      autoLinkHrt();
+
+      hrtLinkBtn.addEventListener('click', function () {
+        if (hrtLinked) return;
+        hrtStatus.textContent = 'Linking…';
+        hrtStatus.className = 'hrt-status hrt-busy';
+        hrtLinkBtn.disabled = true;
+        if (window.__TAURI__ && window.__TAURI__.core) {
+          window.__TAURI__.core.invoke('cmd_link_hrt', { port: 8090 })
+            .then(function (msg) {
+              hrtStatus.textContent = 'HRT Link Successful ✓';
+              hrtStatus.className = 'hrt-status hrt-ok';
+              hrtLinked = true;
+            })
+            .catch(function (err) {
+              hrtStatus.textContent = 'HRT not found — make sure Hot Rod Tuner is running';
+              hrtStatus.className = 'hrt-status hrt-err';
+              hrtLinkBtn.disabled = false;
+            });
+        }
+      });
+
+      // ── HF Download screen ────────────────────────────────────
+      hfBackBtn.addEventListener('click', function () {
+        showModelLoader();
+      });
+
+      hfOpenLibBtn.addEventListener('click', function () {
+        if (window.__TAURI__ && window.__TAURI__.core) {
+          window.__TAURI__.core.invoke('cmd_open_model_library').catch(function () {});
+        }
+      });
+
+      hfDownloadBtn.addEventListener('click', function () {
+        var url = hfUrlInput.value.trim();
+        if (!url) return;
+
+        hfLogBuffer = [];
+        hfTerminal.innerHTML = '';
+        hfDownloadBtn.disabled = true;
+        hfUrlInput.disabled = true;
+        hfDownloadActive = true;
+
+        if (window.__TAURI__ && window.__TAURI__.core) {
+          window.__TAURI__.core.invoke('cmd_download_hf_model', { url: url })
+            .then(function () {
+              hfDownloadActive = false;
+              hfDownloadBtn.disabled = false;
+              hfUrlInput.disabled = false;
+            })
+            .catch(function (err) {
+              hfDownloadActive = false;
+              appendTerminalLine('✗ ' + err, true);
+              hfDownloadBtn.disabled = false;
+              hfUrlInput.disabled = false;
+            });
+        }
+      });
+
+      function appendTerminalLine(text, isError) {
+        hfLogBuffer.push({ text: text, err: isError });
+        var p = document.createElement('p');
+        p.className = 'hf-terminal-line' + (isError ? ' hf-terminal-err' : '');
+        p.textContent = text;
+        hfTerminal.appendChild(p);
+        hfTerminal.scrollTop = hfTerminal.scrollHeight;
+      }
+
+      function scanPartials() {
+        if (!window.__TAURI__ || !window.__TAURI__.core) return;
+        window.__TAURI__.core.invoke('cmd_list_partial_downloads')
+          .then(function (entries) {
+            hfPartialsList.innerHTML = '';
+            if (!entries || entries.length === 0) {
+              hfPartials.style.display = 'none';
+              return;
+            }
+            hfPartials.style.display = '';
+            entries.forEach(function (entry) {
+              var row = document.createElement('div');
+              row.className = 'hf-partial-row';
+
+              var name = document.createElement('span');
+              name.className = 'hf-partial-name';
+              name.textContent = entry.filename;
+              name.title = entry.filename;
+
+              var size = document.createElement('span');
+              size.className = 'hf-partial-size';
+              size.textContent = entry.size_mb.toFixed(1) + ' MB';
+
+              var resumeBtn = document.createElement('button');
+              resumeBtn.className = 'hf-partial-resume';
+              resumeBtn.textContent = 'Resume';
+              resumeBtn.addEventListener('click', function () {
+                var url = hfUrlInput.value.trim();
+                if (!url) {
+                  appendTerminalLine('Paste the original download URL above, then click Resume.', true);
+                  return;
+                }
+                hfLogBuffer = [];
+                hfTerminal.innerHTML = '';
+                hfDownloadBtn.disabled = true;
+                hfUrlInput.disabled = true;
+                hfDownloadActive = true;
+                window.__TAURI__.core.invoke('cmd_download_hf_model', { url: url })
+                  .then(function () {
+                    hfDownloadActive = false;
+                    hfDownloadBtn.disabled = false;
+                    hfUrlInput.disabled = false;
+                    scanPartials();
+                  })
+                  .catch(function (err) {
+                    hfDownloadActive = false;
+                    appendTerminalLine('\u2717 ' + err, true);
+                    hfDownloadBtn.disabled = false;
+                    hfUrlInput.disabled = false;
+                    scanPartials();
+                  });
+              });
+
+              var deleteBtn = document.createElement('button');
+              deleteBtn.className = 'hf-partial-delete';
+              deleteBtn.textContent = '\u00D7';
+              deleteBtn.title = 'Delete partial file';
+              deleteBtn.addEventListener('click', function () {
+                if (!confirm('Delete partial download ' + entry.filename + '?')) return;
+                window.__TAURI__.core.invoke('cmd_delete_partial_download', { filename: entry.filename })
+                  .then(function () { scanPartials(); })
+                  .catch(function (err) { appendTerminalLine('Delete failed: ' + err, true); });
+              });
+
+              row.appendChild(name);
+              row.appendChild(size);
+              row.appendChild(resumeBtn);
+              row.appendChild(deleteBtn);
+              hfPartialsList.appendChild(row);
+            });
+          })
+          .catch(function (err) {
+            console.error('scan partials failed:', err);
+          });
+      }
+
+      // Listen for HF download log events
+      if (window.__TAURI__ && window.__TAURI__.event) {
+        window.__TAURI__.event.listen('hf-download-log', function (event) {
+          var d = event.payload;
+          if (!d) return;
+          appendTerminalLine(d.line, d.error);
+          if (d.done) {
+            hfDownloadActive = false;
+            hfDownloadBtn.disabled = false;
+            hfUrlInput.disabled = false;
+            scanPartials();
+          }
+        }).catch(function (err) {
+          console.error('hf-download-log listener failed:', err);
+        });
+      }
+
+      // ── Tauri 2 drag-drop event ────────────────────────────────
+      if (window.__TAURI__ && window.__TAURI__.webviewWindow) {
+        var currentWindow = window.__TAURI__.webviewWindow.getCurrentWebviewWindow();
+        currentWindow.onDragDropEvent(function (event) {
+          if (event.payload.type === 'over') {
+            dropOverlay.classList.remove('hidden');
+          } else if (event.payload.type === 'drop') {
+            dropOverlay.classList.add('hidden');
+            var paths = event.payload.paths;
+            if (paths && paths.length > 0) {
+              var pdf = paths.find(function (p) { return p.toLowerCase().endsWith('.pdf'); });
+              if (pdf) {
+                if (waitingForNewPdf) {
+                  runWithStoredConfig(pdf);
+                } else {
+                  loadPdf(pdf);
+                }
+              }
+            }
+          } else {
+            dropOverlay.classList.add('hidden');
+          }
+        }).catch(function (err) {
+          console.error('drag-drop listener failed:', err);
+        });
+      }
+    })();
+  </script>
+</body>
+</html>

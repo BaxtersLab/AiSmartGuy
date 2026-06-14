@@ -1,0 +1,433 @@
+{
+  "packet_id": 1,
+  "category": "fallacies",
+  "description": "Detect logical fallacies — errors in reasoning that undermine the validity of an argument, whether deployed deliberately or carelessly.",
+  "version": "1.0",
+  "rules": [
+    {
+      "rule_id": "FAL-01",
+      "name": "Straw Man",
+      "pattern_type": "semantic",
+      "patterns": [
+        "so you're saying",
+        "what they really mean is",
+        "in other words, they want",
+        "what you're actually arguing",
+        "that's basically saying",
+        "so essentially you believe",
+        "you're suggesting that",
+        "their position boils down to"
+      ],
+      "severity": "high",
+      "explanation": "Misrepresents or exaggerates an opponent's position to make it easier to attack. The real argument is replaced with a distorted version. Look for paraphrases that insert extremes, absolutes, or implications the original didn't contain, followed by a rebuttal of the distortion."
+    },
+    {
+      "rule_id": "FAL-02",
+      "name": "Ad Hominem",
+      "pattern_type": "semantic",
+      "patterns": [
+        "consider the source",
+        "what would they know about",
+        "of course they'd say that",
+        "coming from someone who",
+        "you're not qualified",
+        "spoken like a true",
+        "they have no credibility",
+        "given their track record",
+        "they're just a",
+        "people like them"
+      ],
+      "severity": "high",
+      "explanation": "Attacks the person making the argument rather than the argument itself. The validity of a claim is independent of who states it. Look for character attacks, credential questioning, or motive impugning that substitutes for addressing the actual point."
+    },
+    {
+      "rule_id": "FAL-03",
+      "name": "Appeal to Authority (Unsubstantiated)",
+      "pattern_type": "linguistic",
+      "patterns": [
+        "studies show",
+        "experts agree",
+        "scientists say",
+        "research proves",
+        "according to experts",
+        "it has been established",
+        "authorities on the subject",
+        "leading researchers",
+        "the scientific community agrees",
+        "it is widely accepted"
+      ],
+      "severity": "medium",
+      "explanation": "Cites unnamed or unverifiable authority as proof. Legitimate appeal to authority names specific sources with verifiable credentials in the relevant field. Red flags: no names, no citations, no publication, vague collective nouns ('experts', 'scientists', 'researchers'), or the authority cited is outside their domain of expertise."
+    },
+    {
+      "rule_id": "FAL-04",
+      "name": "Appeal to Emotion",
+      "pattern_type": "semantic",
+      "patterns": [
+        "think of the children",
+        "imagine the suffering",
+        "how could anyone",
+        "it would be a tragedy",
+        "any decent person would",
+        "no compassionate person",
+        "it breaks my heart",
+        "the devastation would be",
+        "a moral outrage",
+        "only a monster would"
+      ],
+      "severity": "high",
+      "explanation": "Substitutes emotional reaction (fear, pity, outrage, disgust) for logical reasoning. The emotional charge is used to bypass critical evaluation. A valid argument can include emotion, but here the emotion IS the argument — remove it and no reasoning remains."
+    },
+    {
+      "rule_id": "FAL-05",
+      "name": "Appeal to Popularity (Bandwagon)",
+      "pattern_type": "linguistic",
+      "patterns": [
+        "everyone knows",
+        "most people agree",
+        "the majority believes",
+        "no one disputes",
+        "it's common knowledge",
+        "the consensus is",
+        "everybody thinks",
+        "it's universally accepted",
+        "no reasonable person would deny",
+        "any sensible person"
+      ],
+      "severity": "medium",
+      "explanation": "Argues a claim is true because many people believe it. Popularity has no bearing on truth — millions believed the earth was flat. Look for head-count language that substitutes for evidence: quantifiers about how many agree, combined with an absence of actual proof."
+    },
+    {
+      "rule_id": "FAL-06",
+      "name": "Appeal to Nature",
+      "pattern_type": "linguistic",
+      "patterns": [
+        "it's natural",
+        "nature intended",
+        "the natural way",
+        "unnatural",
+        "goes against nature",
+        "as nature designed",
+        "organic therefore",
+        "naturally occurring",
+        "nature knows best",
+        "in harmony with nature"
+      ],
+      "severity": "medium",
+      "explanation": "Equates 'natural' with 'good' or 'unnatural' with 'bad'. Arsenic is natural; insulin injections are unnatural. The naturalistic fallacy conflates 'is' with 'ought'. Look for the word 'natural' used as a value judgment rather than a factual descriptor."
+    },
+    {
+      "rule_id": "FAL-07",
+      "name": "Appeal to Tradition",
+      "pattern_type": "linguistic",
+      "patterns": [
+        "we've always done it this way",
+        "it's tradition",
+        "historically",
+        "time-tested",
+        "the way things have always been",
+        "our forefathers",
+        "it's been this way for centuries",
+        "tried and true",
+        "the established way",
+        "as it has always been"
+      ],
+      "severity": "low",
+      "explanation": "Argues something is correct because it has been done that way for a long time. Duration of practice has no bearing on validity. Look for temporal longevity used as the primary justification — the past substituting for evidence."
+    },
+    {
+      "rule_id": "FAL-08",
+      "name": "Appeal to Ignorance",
+      "pattern_type": "semantic",
+      "patterns": [
+        "no one has proven otherwise",
+        "you can't disprove",
+        "until it's disproven",
+        "there's no evidence against",
+        "hasn't been shown to be false",
+        "prove me wrong",
+        "absence of evidence",
+        "nobody has ever shown"
+      ],
+      "severity": "high",
+      "explanation": "Argues a claim is true because it hasn't been proven false, or vice versa. The burden of proof lies with the claimant. Lack of disproof is not proof. Look for demands to prove a negative — shifting the burden of proof to the opponent."
+    },
+    {
+      "rule_id": "FAL-09",
+      "name": "False Dilemma / False Dichotomy",
+      "pattern_type": "linguistic",
+      "patterns": [
+        "either you're with us or against us",
+        "the only option is",
+        "there is no alternative",
+        "you must choose between",
+        "it's one or the other",
+        "there are only two choices",
+        "if not this, then",
+        "the only way",
+        "you either accept or reject",
+        "there's no middle ground"
+      ],
+      "severity": "high",
+      "explanation": "Presents only two options when more exist. Eliminates nuance, compromise, and alternative solutions. Look for binary framing ('either/or', 'only two choices') especially on complex issues where a spectrum of positions is possible. The missing options are often the most reasonable ones."
+    },
+    {
+      "rule_id": "FAL-10",
+      "name": "Slippery Slope",
+      "pattern_type": "semantic",
+      "patterns": [
+        "next thing you know",
+        "where does it end",
+        "before long",
+        "it's a slippery slope",
+        "open the floodgates",
+        "this will inevitably lead to",
+        "first they came for",
+        "if we allow this, then",
+        "it won't stop there",
+        "what's next"
+      ],
+      "severity": "medium",
+      "explanation": "Argues that one action will trigger an unstoppable chain of increasingly extreme consequences without establishing the causal links between each step. Each step in the chain requires its own evidence. Look for catastrophic chains where the jumps between steps are asserted not proven."
+    },
+    {
+      "rule_id": "FAL-11",
+      "name": "False Cause (Post Hoc / Correlation)",
+      "pattern_type": "semantic",
+      "patterns": [
+        "ever since we",
+        "shortly after",
+        "this led directly to",
+        "because of this, that happened",
+        "the result was",
+        "caused by the fact that",
+        "this is why",
+        "it's no coincidence that",
+        "which resulted in",
+        "the data clearly shows a link"
+      ],
+      "severity": "medium",
+      "explanation": "Assumes that because B followed A, A caused B (post hoc ergo propter hoc), or that correlation implies causation. Temporal sequence and statistical correlation do not establish causal mechanisms. Look for causal claims without mechanistic explanation, controlled studies, or elimination of confounding variables."
+    },
+    {
+      "rule_id": "FAL-12",
+      "name": "Hasty Generalization",
+      "pattern_type": "linguistic",
+      "patterns": [
+        "I once met a",
+        "in my experience",
+        "all of them are",
+        "they always",
+        "they never",
+        "every single one",
+        "without exception",
+        "I've seen it myself",
+        "typical of",
+        "that's just how they are"
+      ],
+      "severity": "medium",
+      "explanation": "Draws a broad conclusion from a small, unrepresentative sample. Personal anecdotes, single examples, or cherry-picked cases are extrapolated to entire populations. Look for universal quantifiers ('all', 'every', 'always', 'never') supported by only one or two examples."
+    },
+    {
+      "rule_id": "FAL-13",
+      "name": "Circular Reasoning / Begging the Question",
+      "pattern_type": "semantic",
+      "patterns": [
+        "because it is",
+        "it's true because it's true",
+        "the reason is simply that",
+        "by definition",
+        "which proves that",
+        "as we already know",
+        "this proves itself",
+        "the evidence is the claim itself"
+      ],
+      "severity": "high",
+      "explanation": "The conclusion is assumed in the premise. The argument goes in a circle — A is true because of B, and B is true because of A. Look for conclusions that merely restate the premise in different words, or chains of reasoning where the starting point and endpoint are the same claim."
+    },
+    {
+      "rule_id": "FAL-14",
+      "name": "Tu Quoque (Whataboutism)",
+      "pattern_type": "linguistic",
+      "patterns": [
+        "but you also",
+        "look who's talking",
+        "you do it too",
+        "what about when you",
+        "pot calling the kettle",
+        "you're one to talk",
+        "they did the same thing",
+        "but what about",
+        "that's hypocritical coming from",
+        "and yet you"
+      ],
+      "severity": "medium",
+      "explanation": "Deflects criticism by pointing at the accuser's behavior. Whether the accuser is a hypocrite is irrelevant to the truth of their claim. A thief who says 'stealing is wrong' is correct regardless of their own behavior. Look for counter-accusations that change the subject rather than address the argument."
+    },
+    {
+      "rule_id": "FAL-15",
+      "name": "No True Scotsman",
+      "pattern_type": "linguistic",
+      "patterns": [
+        "a real X would",
+        "no true",
+        "that's not really",
+        "any genuine",
+        "a proper",
+        "they're not a real",
+        "if they were truly",
+        "that doesn't count because"
+      ],
+      "severity": "medium",
+      "explanation": "When confronted with a counterexample, redefines the group to exclude it. 'No Scotsman would do that.' 'But McTavish did.' 'Well, no TRUE Scotsman would.' The definition shifts to become unfalsifiable. Look for ad-hoc redefinition of categories after a counterexample is presented."
+    },
+    {
+      "rule_id": "FAL-16",
+      "name": "Red Herring",
+      "pattern_type": "contextual",
+      "patterns": [
+        "but what about",
+        "the real issue is",
+        "more importantly",
+        "let's not forget that",
+        "you're missing the bigger picture",
+        "what we should really be talking about",
+        "that's beside the point but",
+        "while we're on the subject"
+      ],
+      "severity": "medium",
+      "explanation": "Introduces an irrelevant topic to divert attention from the original argument. The diversion may be interesting or emotionally compelling but does not address the point being debated. Look for topic shifts that abandon the original question without resolving it, often using transitional phrases that bridge to unrelated territory."
+    },
+    {
+      "rule_id": "FAL-17",
+      "name": "Loaded Question",
+      "pattern_type": "linguistic",
+      "patterns": [
+        "have you stopped",
+        "why do you always",
+        "when will you admit",
+        "how long have you been",
+        "do you still",
+        "why are you so",
+        "isn't it true that you",
+        "when did you decide to"
+      ],
+      "severity": "high",
+      "explanation": "Asks a question that presupposes something unproven. Any direct answer confirms the embedded assumption. 'Have you stopped cheating?' presupposes cheating occurred. Look for questions where answering 'yes' or 'no' both concede a contested premise."
+    },
+    {
+      "rule_id": "FAL-18",
+      "name": "Equivocation",
+      "pattern_type": "contextual",
+      "patterns": [
+        "in a sense",
+        "it depends on what you mean by",
+        "technically speaking",
+        "in a manner of speaking",
+        "loosely speaking",
+        "by that logic",
+        "if you define it as",
+        "that's one way to look at it"
+      ],
+      "severity": "medium",
+      "explanation": "Uses the same word with different meanings at different points in the argument, making the conclusion appear to follow when it doesn't. The semantic drift is often subtle — look for key terms that shift from a common usage to a technical one (or vice versa) within the same passage."
+    },
+    {
+      "rule_id": "FAL-19",
+      "name": "Moving the Goalposts",
+      "pattern_type": "semantic",
+      "patterns": [
+        "that's not what I meant",
+        "what I really need is",
+        "that's not enough",
+        "yes but",
+        "that doesn't count",
+        "what I actually said was",
+        "you still haven't shown",
+        "the real question is"
+      ],
+      "severity": "medium",
+      "explanation": "After evidence meets the original demand, the criteria are changed so the evidence is never sufficient. The finish line moves every time you approach it. Look for escalating demands — each time one requirement is met, a new one appears that wasn't mentioned before."
+    },
+    {
+      "rule_id": "FAL-20",
+      "name": "Special Pleading",
+      "pattern_type": "linguistic",
+      "patterns": [
+        "but this is different",
+        "that doesn't apply here",
+        "this case is special",
+        "the rules don't apply to",
+        "that's an exception because",
+        "this situation is unique",
+        "you can't compare",
+        "it's not the same thing"
+      ],
+      "severity": "medium",
+      "explanation": "Claims an exemption from a generally accepted rule without adequate justification. The standard applies to everyone except the speaker's favoured case — for reasons that amount to 'because I said so'. Look for unjustified exception claims, especially when the reasoning for the exception isn't substantially different from cases where the rule is applied."
+    },
+    {
+      "rule_id": "FAL-21",
+      "name": "Genetic Fallacy",
+      "pattern_type": "semantic",
+      "patterns": [
+        "consider where it came from",
+        "the source alone should tell you",
+        "originated from",
+        "given its origins",
+        "it was invented by",
+        "knowing who created it",
+        "that idea comes from",
+        "born out of"
+      ],
+      "severity": "low",
+      "explanation": "Judges a claim by its origin rather than its current merit. A good idea from a bad source is still a good idea. A medicine discovered by accident is no less effective. Look for arguments where the origin, history, or creator of something is presented as the sole basis for accepting or rejecting it."
+    },
+    {
+      "rule_id": "FAL-22",
+      "name": "Composition / Division",
+      "pattern_type": "semantic",
+      "patterns": [
+        "therefore the whole",
+        "each part must also be",
+        "since the group is",
+        "every member is therefore",
+        "as a whole it must",
+        "what's true of the parts",
+        "if one of them is then all",
+        "individually they are so collectively"
+      ],
+      "severity": "low",
+      "explanation": "Composition: assumes what is true of the parts must be true of the whole (every player is great, therefore the team is great). Division: assumes what is true of the whole must be true of every part (the team won, so every player performed well). Look for unsupported part-to-whole or whole-to-part transfers."
+    },
+    {
+      "rule_id": "FAL-23",
+      "name": "False Equivalence / Category Error",
+      "pattern_type": "semantic",
+      "patterns": [
+        "is the same as",
+        "is no different from",
+        "is just like",
+        "is equivalent to",
+        "both sides",
+        "equally guilty",
+        "comparing apples and oranges",
+        "it's like comparing",
+        "that's the same thing as",
+        "by that logic",
+        "one is just as bad as the other",
+        "there's no difference between"
+      ],
+      "severity": "medium",
+      "explanation": "Treats fundamentally different things as if they are the same, or equates two situations that differ in critical ways. The speaker flattens important distinctions — scale, context, intent, severity — to force a false parallel. Look for direct equivalence claims between things that share superficial similarity but differ in substance, or 'both sides' framing that erases meaningful asymmetry."
+    }
+  ],
+  "hit_conditions": {
+    "min_pattern_matches": 2,
+    "confidence_weight": 1.0
+  },
+  "model_behavior": {
+    "inject_as": "system_prompt",
+    "priority": 1
+  }
+}

@@ -1,0 +1,13 @@
+[package]
+name = "pdf_io"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+utils        = { path = "../utils" }
+logging      = { path = "../logging" }
+error_system = { path = "../error_system" }
+lopdf        = "0.32"
+base64       = "0.22"
+pdf-extract  = "0.7"
+regex        = "1"

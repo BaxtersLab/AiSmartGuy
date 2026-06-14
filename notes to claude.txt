@@ -1,0 +1,5 @@
+your job is to review the AiSmartGuy app and see if you can help me solve
+ the context wall issue.. i cant get a good book review because it hits context limit and looses its mind.. 
+i was wondering if this rag system could help in this situation>> https://github.com/StarTrail-org/LEANN.. 
+maybe we can compress the book in chunks then the model may be able to digest the chapters and give its
+ review for each 

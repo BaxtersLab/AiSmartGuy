@@ -1,0 +1,97 @@
+UPDATE PACKAGES — Hitlist Expansion Packs
+==========================================
+
+Dev Notes — AiSmartGuy RAG Hitlist System
+──────────────────────────────────────────────────────────────────
+
+LANGUAGE SCOPE: ENGLISH ONLY
+All hitlist categories, RAG rules, pattern matching, and keyword
+scoring target English-language text. Multi-language expansion is
+out of scope and not architected for at this time.
+
+ARCHITECTURE
+──────────────────────────────────────────────────────────────────
+
+The hitlist system is number-coded and gated:
+
+  - Each category has a unique numeric code (1–N) and a slug.
+  - The catalog lives in rag_engine::hitlist::catalog().
+  - Categories marked active = true are scored every run.
+  - Categories marked active = false are DORMANT — present in
+    the catalog but invisible to the scoring/optimization pipeline.
+  - The optimization engine, consensus rules, and scoring formulas
+    are category-agnostic. They operate on whatever slugs appear
+    in manifest.categories_active. Adding a new category does NOT
+    require changes to scoring, aggregator, consensus, or mapping.
+
+This means expansion packs integrate cleanly:
+  1. Add the new HitlistEntry to catalog() with active = false.
+  2. Author the RAG instruction .json documents per system protocol.
+  3. When ready: flip active = true, rebuild. The existing mechanics
+     pick it up automatically — no jamming, no special wiring.
+
+──────────────────────────────────────────────────────────────────
+WHAT IS A HITLIST EXPANSION PACK?
+──────────────────────────────────────────────────────────────────
+
+A hitlist expansion pack contains:
+
+  1. A new HitlistEntry in the catalog (code, slug, name, description).
+  2. RAG instruction .json documents authored to system protocol specs:
+       - packet_id (number-coded, unique)
+       - category (must match the slug)
+       - rules[] with rule_id, name, pattern_type, patterns, severity
+       - hit_conditions (min_pattern_matches, confidence_weight)
+       - model_behavior (inject_as, priority)
+  3. Scoring validation results from a 10-book test run.
+
+The pack is NOT implemented until:
+  - Human testing phase is 100% greenlighted on existing categories.
+  - The RAG .json documents pass validation against packet_validator.
+  - The expansion does not regress existing category scoring.
+
+──────────────────────────────────────────────────────────────────
+DORMANCY RULES
+──────────────────────────────────────────────────────────────────
+
+  - Dormant entries (active = false) are never included in
+    manifest.categories_active.
+  - They are never passed to compute_scores().
+  - They consume zero runtime resources.
+  - They exist only as catalog placeholders for future activation.
+
+──────────────────────────────────────────────────────────────────
+PLANNED EXPANSION PACKS
+──────────────────────────────────────────────────────────────────
+
+Pack 1 — Racism & Intolerance (hitlist code 7)
+  Slug:        racism_intolerance
+  Status:      DORMANT (active = false)
+  Deliverables:
+    - RAG instruction .json documents for the category
+    - Flip active flag in hitlist catalog
+    - Scoring validation across 10-book test set
+
+Pack 2 — Philosophical Filters (hitlist code 8)
+  Slug:        philosophical_filters
+  Status:      DORMANT (active = false)
+  Deliverables:
+    - RAG instruction .json documents for the category
+    - Flip active flag in hitlist catalog
+    - Scoring validation across 10-book test set
+
+──────────────────────────────────────────────────────────────────
+DEPLOYMENT PROCESS (when greenlighted)
+──────────────────────────────────────────────────────────────────
+
+1. Author RAG instruction .json files per system protocol specs.
+2. Place .json files in update_packages/<pack_name>/rag/
+3. Validate packets with packet_validator.
+4. Test scoring against sample PDFs — confirm no regression.
+5. Update hitlist catalog entry: active = true.
+6. Rebuild release binary.
+7. User installs by downloading release or cloning pack contents
+   to proper model library folder.
+
+NOTE: There is no GitHub repo at this time. Distribution method
+      TBD after human testing phase passes 100%.
