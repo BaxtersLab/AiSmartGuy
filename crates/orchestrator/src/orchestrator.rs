@@ -16,8 +16,14 @@ use crate::sequence_plan::build_sequence;
 use crate::state_bridge;
 use crate::types::{FusionInput, ModelOutputs, OrchestratorProgressEvent, OrchestratorState};
 
-/// RAG system prompt overhead (tokens).  All active packets rendered.
-const RAG_OVERHEAD: usize = 6800;
+/// Fallback RAG system prompt overhead (tokens) — used ONLY if the packets
+/// cannot be rendered for measurement. The real overhead is MEASURED from the
+/// rendered packets before chapter-splitting (a hardcoded guess here was the
+/// root of the context-ceiling failure: on VRAM-capped hardware the budget
+/// subtraction went negative, the MIN floor masked it, and every prompt then
+/// overflowed the loaded context — llama.cpp truncated the FRONT, which holds
+/// the RAG instructions, and the model "lost its mind").
+const RAG_OVERHEAD_FALLBACK: usize = 6800;
 /// Generation output headroom (tokens).
 const GEN_HEADROOM: usize = 2048;
 /// Percentage of context reserved as safety margin for token-estimation error.
@@ -155,16 +161,58 @@ impl Orchestrator {
             cap
         };
 
+        // ── Measure the REAL RAG prompt size (not a guess) ──────────────────
+        // Render the merged packets exactly as the per-model loop will and take
+        // the largest across active models. This is the single source of truth
+        // the chapter budget subtracts.
+        let rag_overhead = {
+            let mut max_tokens: Option<usize> = None;
+            for model_name in &plan.model_order {
+                if let Ok(mc) = self.get_model_config(model_name) {
+                    let rag_dir = PathBuf::from(&mc.path).join("rag");
+                    if let Ok(sp) = build_system_prompt(&rag_dir) {
+                        let t = sp.len() / CHARS_PER_TOKEN;
+                        max_tokens = Some(max_tokens.map_or(t, |m: usize| m.max(t)));
+                    }
+                }
+            }
+            match max_tokens {
+                Some(t) => t,
+                None => {
+                    eprintln!(
+                        "[orchestrator][WARN] could not render RAG packets for measurement — \
+                         falling back to {} token estimate",
+                        RAG_OVERHEAD_FALLBACK
+                    );
+                    RAG_OVERHEAD_FALLBACK
+                }
+            }
+        };
+
         let safety_margin = effective_ctx * SAFETY_PCT / 100;
-        let chapter_budget = effective_ctx
-            .saturating_sub(RAG_OVERHEAD)
+        let raw_budget = effective_ctx
+            .saturating_sub(rag_overhead)
             .saturating_sub(GEN_HEADROOM)
-            .saturating_sub(safety_margin)
-            .max(MIN_CHAPTER_TOKENS);
+            .saturating_sub(safety_margin);
+
+        // The old code floored a NEGATIVE budget to MIN_CHAPTER_TOKENS and sent
+        // overflowing prompts anyway. Fail loudly with the actual numbers and
+        // what to do about it instead — an honest error beats a garbled review.
+        if raw_budget < MIN_CHAPTER_TOKENS {
+            return Err(OrchestratorError::InvalidState(format!(
+                "CONTEXT_TOO_SMALL: hardware-capped context is {} tokens but the RAG \
+                 packets ({}) + generation headroom ({}) + safety ({}) leave only {} for \
+                 chapter text (minimum {}). Fix: disable some RAG packet categories, \
+                 raise the hardware throttle, or use a smaller/more-quantized model.",
+                effective_ctx, rag_overhead, GEN_HEADROOM, safety_margin,
+                raw_budget, MIN_CHAPTER_TOKENS
+            )));
+        }
+        let chapter_budget = raw_budget;
 
         eprintln!(
-            "[orchestrator] effective_ctx={} RAG={} gen={} safety={}({}%) → chapter_budget={} tokens",
-            effective_ctx, RAG_OVERHEAD, GEN_HEADROOM, safety_margin, SAFETY_PCT, chapter_budget
+            "[orchestrator] effective_ctx={} RAG={}(measured) gen={} safety={}({}%) → chapter_budget={} tokens",
+            effective_ctx, rag_overhead, GEN_HEADROOM, safety_margin, SAFETY_PCT, chapter_budget
         );
 
         let chapters = chapter_split(&extracted, chapter_budget, CHAPTER_OVERLAP);
@@ -275,10 +323,14 @@ impl Orchestrator {
                 + (max_chapter_tokens + system_prompt_tokens + GEN_HEADROOM) * SAFETY_PCT / 100;
             // Round up to nearest 2048 boundary for KV cache alignment.
             let needed_ctx = ((needed_ctx + 2047) / 2048) * 2048;
-            // Cap at model config (which is already capped at model native).
-            let right_sized_ctx = needed_ctx.min(
-                model_config.context_length.unwrap_or(16384) as usize
-            ).max(2048); // floor at 2K
+            // Cap at model config AND at the VRAM-capped effective context —
+            // the split was budgeted against effective_ctx, and loading larger
+            // than the hardware cap OOMs/spills (the split/load numbers MUST
+            // agree, that mismatch was half the context-ceiling failure).
+            let right_sized_ctx = needed_ctx
+                .min(model_config.context_length.unwrap_or(16384) as usize)
+                .min(effective_ctx.max(2048))
+                .max(2048); // floor at 2K
 
             eprintln!(
                 "[orchestrator] auto-ctx: max_chapter={}tok sys_prompt={}tok gen={} → needed={} → using {}",
@@ -324,6 +376,22 @@ impl Orchestrator {
                     break;
                 }
 
+                // Pre-flight overflow guard: NEVER send a prompt that cannot
+                // fit the loaded context with generation headroom — llama.cpp
+                // would truncate the front (the RAG instructions) and produce
+                // garbage. Skipping one chapter honestly beats poisoning the
+                // whole fold with a mindless analysis.
+                let prompt_tokens_est = prompt_content.len() / CHARS_PER_TOKEN;
+                if prompt_tokens_est + GEN_HEADROOM > right_sized_ctx {
+                    eprintln!(
+                        "[orchestrator][ERROR] {} {}: prompt ~{}tok + gen {} exceeds loaded ctx {} — \
+                         chapter SKIPPED (budget bug upstream; report this)",
+                        model_name, ch_label, prompt_tokens_est, GEN_HEADROOM, right_sized_ctx
+                    );
+                    model_had_failure = true;
+                    continue;
+                }
+
                 let output_path = output_dir.join(format!("{}_output.txt", ch_label));
                 let log_path = log_dir.join(format!("{}_{}.log", model_name, ch_label));
 
@@ -353,9 +421,11 @@ impl Orchestrator {
                     );
                     std::thread::sleep(std::time::Duration::from_secs(3));
 
-                    // Re-create the instance (fresh state machine).
+                    // Re-create the instance (fresh state machine). Use the
+                    // SIZED config — retrying at the unsized (user/native)
+                    // context was a guaranteed-worse OOM on capped hardware.
                     let _ = state_bridge::unload(&mut instance);
-                    instance = state_bridge::make_instance(&model_config, self.manifest.resource_throttle.throttle_pct);
+                    instance = state_bridge::make_instance(&sized_config, self.manifest.resource_throttle.throttle_pct);
                     if let Err(e2) = state_bridge::load(&mut instance) {
                         eprintln!("[orchestrator][ERROR] reload failed for {}: {}", model_name, e2);
                         model_had_failure = true;
