@@ -7,13 +7,13 @@
 
 root     ::= ws "[" ws ( finding ( ws "," ws finding )* )? ws "]" ws
 
-finding  ::= "{" ws
+finding  ::= "{" ws (
               "\"rule_id\""  ws ":" ws string ws "," ws
               "\"quote\""    ws ":" ws string ws "," ws
               "\"location\"" ws ":" ws string ws "," ws
               "\"severity\"" ws ":" ws severity ws "," ws
               "\"note\""     ws ":" ws string ws
-            "}"
+            ) "}"
 
 severity ::= "\"low\"" | "\"medium\"" | "\"high\""
 

@@ -557,3 +557,61 @@ mod tests {
         assert!(table.contains("No structured findings"));
     }
 }
+
+#[cfg(test)]
+mod grammar_tests {
+    use super::FINDINGS_GBNF;
+
+    /// Lines that continue a rule outside parentheses. llama.cpp's GBNF parser
+    /// ends a rule at a newline unless it is inside parentheses, so such a
+    /// line is read as a new rule with no name. Real failure, 2026-09-27:
+    /// `error parsing grammar: expecting name at "\"rule_id\""`. The in-app
+    /// b10238 build aborted, and the archive 8681 build dropped the grammar
+    /// and ran unconstrained. Phase 2 had never run against a real llama.
+    fn continuations_outside_parens(grammar: &str) -> Vec<String> {
+        let mut bad = Vec::new();
+        let mut depth = 0i32;
+        for line in grammar.lines() {
+            let body = line.trim();
+            let starts_rule = body.split_once("::=").map_or(false, |(name, _)| {
+                let n = name.trim();
+                !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+            });
+            if depth == 0 && !body.is_empty() && !body.starts_with('#') && !starts_rule {
+                bad.push(line.to_string());
+            }
+            let (mut in_str, mut in_class, mut esc) = (false, false, false);
+            for c in line.chars() {
+                if esc { esc = false; continue; }
+                match c {
+                    '\\' if in_str || in_class => esc = true,
+                    '"' if !in_class => in_str = !in_str,
+                    '[' if !in_str => in_class = true,
+                    ']' if in_class => in_class = false,
+                    '#' if !in_str && !in_class => break,
+                    '(' if !in_str && !in_class => depth += 1,
+                    ')' if !in_str && !in_class => depth -= 1,
+                    _ => {}
+                }
+            }
+        }
+        if depth != 0 {
+            bad.push(format!("unbalanced parentheses (depth {depth} at the end)"));
+        }
+        bad
+    }
+
+    #[test]
+    fn every_line_of_the_findings_grammar_parses_in_llama_cpp() {
+        assert_eq!(continuations_outside_parens(FINDINGS_GBNF), Vec::<String>::new());
+    }
+
+    /// Controls: the checker catches the broken shape, and passes the fixed one.
+    #[test]
+    fn a_rule_that_runs_on_outside_parentheses_is_caught() {
+        assert_eq!(continuations_outside_parens("a ::= \"x\" ws\n      \"y\"\nws ::= [ \\t]*\n"),
+                   vec!["      \"y\"".to_string()]);
+        assert!(continuations_outside_parens("a ::= \"x\" (\n      \"(y\" [)]\n  ) \"z\"\n# c (\n").is_empty());
+    }
+}
+
