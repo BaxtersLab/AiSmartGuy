@@ -96,30 +96,38 @@ export GDK_BACKEND=x11
 #
 # XDG_DATA_DIRS is filtered rather than unset — it legitimately holds system
 # paths that must survive; only the snap entries are removed.
-for _var in $(env | grep -o '^[A-Za-z_][A-Za-z0-9_]*=/snap/[^:]*' | cut -d= -f1); do
-    [[ "$_var" == "XDG_DATA_DIRS" ]] && continue
-    unset "$_var"
-done
-for _var in GTK_PATH GTK_IM_MODULE_FILE GTK_EXE_PREFIX GIO_MODULE_DIR LOCPATH \
-            GDK_PIXBUF_MODULEDIR GDK_PIXBUF_MODULE_FILE \
-            XDG_DATA_HOME XDG_CONFIG_HOME XDG_CACHE_HOME; do
-    [[ "${!_var:-}" == *"/snap/"* ]] && unset "$_var"
-done
-unset _var
+#
+# BY VALUE, over every exported variable, and on EVERY element of a colon
+# list (2026-09-27 owner review). The old two loops caught only values that
+# START with /snap/, plus a fixed name list that did not include
+# GSETTINGS_SCHEMA_DIR -- which VS Code exports under $HOME/snap/. The shim
+# below overwrites it only when gschemas.compiled exists, and that file is
+# git-ignored, so in a fresh clone the snap's schema dir survived. PATH is
+# exempt: /snap/bin on it is legitimate and shadows nothing.
+while IFS= read -r -d '' _entry; do
+    _name="${_entry%%=*}"
+    _value="${_entry#*=}"
+    case "$_name" in
+        PATH|XDG_DATA_DIRS) continue ;;
+    esac
+    [[ "$_name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+    case ":$_value" in
+        *:/snap/*|*":${HOME:-/nonexistent}/snap/"*) unset "$_name" ;;
+    esac
+done < <(env -0)
+unset _entry _name _value
 
-# Keep only the non-snap entries of the search-path style variables.
-_strip_snap_path() {
-    local out=""
-    IFS=':' read -ra _parts <<< "${1:-}"
+if [[ -n "${XDG_DATA_DIRS:-}" ]]; then
+    _clean=""
+    IFS=':' read -ra _parts <<< "$XDG_DATA_DIRS"
     for _p in "${_parts[@]}"; do
-        [[ -z "$_p" || "$_p" == */snap/* ]] && continue
-        out="${out:+$out:}$_p"
+        case "$_p" in
+            ""|/snap/*|"${HOME:-/nonexistent}"/snap/*) continue ;;
+        esac
+        _clean="${_clean:+$_clean:}$_p"
     done
-    printf '%s' "$out"
-}
-if [[ "${XDG_DATA_DIRS:-}" == *"/snap/"* ]]; then
-    XDG_DATA_DIRS="$(_strip_snap_path "$XDG_DATA_DIRS")"
-    export XDG_DATA_DIRS="${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+    export XDG_DATA_DIRS="${_clean:-/usr/local/share:/usr/share}"
+    unset _clean _parts _p
 fi
 
 SHIM="$PWD/schema-shim"
