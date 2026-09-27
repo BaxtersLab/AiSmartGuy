@@ -490,13 +490,34 @@ impl Orchestrator {
                     );
 
                     if let Err(e) = state_bridge::infer(&mut instance, &request) {
-                        // Retry once after a brief pause — CUDA may need time to
-                        // release VRAM from a prior process (stall-kill, previous run, etc.).
-                        eprintln!(
-                            "[orchestrator][WARN] inference failed {}/{}: {} — retrying in 3s",
-                            model_name, pass_label, e
-                        );
-                        std::thread::sleep(std::time::Duration::from_secs(3));
+                        // If the GPU could not take the model, retry on the CPU and keep
+                        // it there for the rest of this model's passes: a run that
+                        // cannot use the GPU should be slow, not impossible. The cause
+                        // is only in the pass's own llama log -- the error that reaches
+                        // us is llama's last line ("unable to create context").
+                        let llama_log = std::fs::read_to_string(&request.log_path).unwrap_or_default();
+                        if should_retry_on_cpu(sized_config.gpu_usage.as_deref(), &llama_log) {
+                            eprintln!(
+                                "[orchestrator][WARN] {}/{}: the GPU could not load the model \
+                                 (device memory allocation failed); running {} on the CPU \
+                                 instead -- slower, but the run continues",
+                                model_name, pass_label, model_name
+                            );
+                            self.emit(
+                                "RUNNING_MODEL",
+                                &format!("{}: the GPU could not load the model — continuing on the CPU (slower)", model_name),
+                                ch_progress,
+                            );
+                            sized_config.gpu_usage = Some("CPU".to_string());
+                        } else {
+                            // Retry once after a brief pause — CUDA may need time to
+                            // release VRAM from a prior process (stall-kill, previous run, etc.).
+                            eprintln!(
+                                "[orchestrator][WARN] inference failed {}/{}: {} — retrying in 3s",
+                                model_name, pass_label, e
+                            );
+                            std::thread::sleep(std::time::Duration::from_secs(3));
+                        }
 
                         // Re-create the instance (fresh state machine). Use the
                         // SIZED config — retrying at the unsized (user/native)
@@ -803,6 +824,30 @@ fn combine_outputs_without_fusion(outputs: &ChapterOutputs, titles: &[String]) -
     combined
 }
 
+/// Whether a failed pass should be retried on the CPU: it asked for the GPU,
+/// and llama's own log says the GPU could not take the model. A pass already
+/// on the CPU is never "retried on the CPU" again.
+pub(crate) fn should_retry_on_cpu(gpu_usage: Option<&str>, llama_log: &str) -> bool {
+    state_bridge::uses_gpu(gpu_usage) && gpu_load_failed(llama_log)
+}
+
+/// True when llama.cpp's log shows it could not allocate the model on the GPU.
+/// Seen for real on this estate's GTX 1660 SUPER with the in-app Vulkan build
+/// (2026-09-27): "Memory allocation of size 191439360 failed" /
+/// "ErrorOutOfDeviceMemory" with 5.4 GB free, on every attempt for about
+/// twenty minutes, then not again with the same memory in use. The cause is
+/// unknown, so it can happen to anyone; the CPU path worked throughout.
+fn gpu_load_failed(llama_log: &str) -> bool {
+    const MARKERS: [&str; 5] = [
+        "ErrorOutOfDeviceMemory",
+        "Memory allocation of size",
+        "out of memory",
+        "failed to allocate",
+        "unable to allocate",
+    ];
+    MARKERS.iter().any(|m| llama_log.contains(m))
+}
+
 /// Build the per-chapter prompt: RAG system prompt, a mode-appropriate
 /// instruction, then the chapter text. Extracted so the instruction-gating
 /// bug (prose mode shipped with NO instruction at all — see
@@ -1077,5 +1122,60 @@ mod multi_pass_label_tests {
         assert!(body.find("── Intro ──").unwrap() < body.find("first").unwrap());
         assert!(body.find("first").unwrap() < body.find("── Chapter 2 ──").unwrap());
         assert!(body.find("── Chapter 2 ──").unwrap() < body.find("second").unwrap());
+    }
+}
+
+#[cfg(test)]
+mod gpu_fallback_tests {
+    use super::*;
+
+    /// llama.cpp's own log from a real failed pass (in-app Vulkan build,
+    /// GTX 1660 SUPER, 2026-09-27); only the model path is neutralised.
+    const REAL_VULKAN_OOM_LOG: &[&str] = &[
+    "0.00.121.343 I llama_completion: llama backend init\n",
+    "0.00.121.351 I llama_completion: load the model and apply lora adapter, if any\n",
+    "0.00.778.599 W load: control-looking token: 128247 '</s>' was not control-type; this is probably a bug in the model. its type will be overridden\n",
+    "ggml_vulkan: Memory allocation of size 191439360 failed.\n",
+    "ggml_vulkan: vk::Device::allocateMemory: ErrorOutOfDeviceMemory\n",
+    "0.01.086.726 E llama_model_load: error loading model: vk::Device::allocateMemory: ErrorOutOfDeviceMemory\n",
+    "0.01.086.734 E llama_model_load_from_file_impl: failed to load model\n",
+    "0.01.086.738 E cmn  common_init_: failed to load model '/models/qwen2.5-1.5b-instruct-q4_k_m.gguf'\n",
+    "0.01.086.742 E llama_completion: error: unable to create context\n",
+    ];
+
+    #[test]
+    fn a_real_gpu_allocation_failure_is_recognised() {
+        assert!(gpu_load_failed(&REAL_VULKAN_OOM_LOG.concat()));
+    }
+
+    #[test]
+    fn cuda_out_of_memory_is_recognised_too() {
+        assert!(gpu_load_failed("ggml_cuda_host_malloc: failed to allocate 512.00 MiB of pinned memory: out of memory"));
+    }
+
+    #[test]
+    fn a_gpu_pass_that_the_gpu_refused_is_retried_on_the_cpu() {
+        assert!(should_retry_on_cpu(Some("GPU"), &REAL_VULKAN_OOM_LOG.concat()));
+    }
+
+    /// A pass already on the CPU (explicitly, or by default) is not "moved to
+    /// the CPU" again: it takes the ordinary retry.
+    #[test]
+    fn a_cpu_pass_is_never_retried_on_the_cpu() {
+        assert!(!should_retry_on_cpu(Some("CPU"), &REAL_VULKAN_OOM_LOG.concat()));
+        assert!(!should_retry_on_cpu(Some("cpu"), &REAL_VULKAN_OOM_LOG.concat()));
+        assert!(!should_retry_on_cpu(None, &REAL_VULKAN_OOM_LOG.concat()));
+    }
+
+    #[test]
+    fn a_gpu_pass_that_failed_for_another_reason_stays_on_the_gpu() {
+        assert!(!should_retry_on_cpu(Some("GPU"), "llama_completion: error: unable to read prompt"));
+    }
+
+    /// Control: other failures keep the old retry (same device, after a pause).
+    #[test]
+    fn an_unrelated_failure_is_not_a_gpu_failure() {
+        assert!(!gpu_load_failed("error: failed to open file '/prompts/chapter_001.txt'\nllama_completion: error: unable to read prompt"));
+        assert!(!gpu_load_failed(""));
     }
 }

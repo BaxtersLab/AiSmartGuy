@@ -5,7 +5,7 @@ use model_loader::{
 };
 
 use crate::errors::{OrchestratorError, OrchestratorResult};
-use crate::orchestrator::strip_llama_noise;
+use crate::orchestrator::{should_retry_on_cpu, strip_llama_noise};
 use crate::state_bridge;
 use crate::types::FusionInput;
 
@@ -102,6 +102,8 @@ pub fn run_fusion(
 
     let fold_result = run_fold(
         &mut instance,
+        &mut sized_config,
+        throttle_pct,
         leaves,
         budget_chars,
         &prompt_dir,
@@ -124,6 +126,8 @@ pub fn run_fusion(
 /// Drive the hierarchical fold against an already-loaded instance.
 fn run_fold(
     instance: &mut ModelInstance,
+    config: &mut manifest::ModelConfig,
+    throttle_pct: u32,
     mut leaves: Vec<String>,
     budget_chars: usize,
     prompt_dir: &Path,
@@ -163,7 +167,31 @@ fn run_fold(
             };
             infer_counter += 1;
 
-            state_bridge::infer(instance, &request)?;
+            if let Err(e) = state_bridge::infer(instance, &request) {
+                // The GPU could not take the model: rerun this pass on the CPU
+                // and keep the rest of the fold there, as the chapter passes do.
+                // Any other failure ends the fold, as before.
+                let llama_log = std::fs::read_to_string(&request.log_path).unwrap_or_default();
+                if !should_retry_on_cpu(config.gpu_usage.as_deref(), &llama_log) {
+                    return Err(e);
+                }
+                eprintln!(
+                    "[fusion][WARN] pass {} group {}: the GPU could not load the model \
+                     (device memory allocation failed); continuing the synthesis on the \
+                     CPU -- slower, but the run keeps its synthesis",
+                    pass, gi
+                );
+                crate::progress::emit_progress(&crate::types::OrchestratorProgressEvent {
+                    stage: "RUNNING_FUSION".to_string(),
+                    message: "fusion: the GPU could not load the model — continuing on the CPU (slower)".to_string(),
+                    percent: 0.88,
+                });
+                config.gpu_usage = Some("CPU".to_string());
+                let _ = state_bridge::unload(instance);
+                *instance = state_bridge::make_instance(config, throttle_pct);
+                state_bridge::load(instance)?;
+                state_bridge::infer(instance, &request)?;
+            }
 
             let raw = std::fs::read_to_string(&output_path).unwrap_or_default();
             let cleaned = strip_llama_noise(&raw);

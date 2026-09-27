@@ -39,9 +39,7 @@ pub fn make_instance(config: &ManifestModelConfig, throttle_pct: u32) -> ModelIn
     };
 
     // Auto-calculate GPU layers from model size vs throttled VRAM budget.
-    let n_gpu_layers = if gpu_setting.eq_ignore_ascii_case("cpu") {
-        0
-    } else {
+    let n_gpu_layers = gpu_layers_for(config.gpu_usage.as_deref(), || {
         let raw_vram = query_vram_mb();
         let usable_vram = (raw_vram as u64 * throttle as u64 / 100) as u32;
         eprintln!(
@@ -54,7 +52,7 @@ pub fn make_instance(config: &ManifestModelConfig, throttle_pct: u32) -> ModelIn
             fit, total, usable_vram
         );
         fit
-    };
+    });
 
     // CPU threads: scale logical cores by throttle %.
     let logical_cores = std::thread::available_parallelism()
@@ -71,6 +69,18 @@ pub fn make_instance(config: &ManifestModelConfig, throttle_pct: u32) -> ModelIn
     let mut inst = ModelInstance::new(loader_config, n_gpu_layers);
     inst.threads = threads;
     inst
+}
+
+/// Whether a model's `gpu_usage` setting puts it on the GPU. No setting means
+/// the CPU. The orchestrator's GPU-to-CPU fallback relies on "CPU" meaning
+/// no GPU layers at all.
+pub fn uses_gpu(gpu_usage: Option<&str>) -> bool {
+    gpu_usage.map_or(false, |g| !g.eq_ignore_ascii_case("cpu"))
+}
+
+/// GPU layers for a pass: none on the CPU, otherwise what `fit` says fits.
+fn gpu_layers_for(gpu_usage: Option<&str>, fit: impl FnOnce() -> u32) -> u32 {
+    if uses_gpu(gpu_usage) { fit() } else { 0 }
 }
 
 /// Load model — wraps `model_loader::load_model`.
@@ -95,4 +105,25 @@ pub fn infer(
 /// Unload model — wraps `model_loader::unload_model`.
 pub fn unload(instance: &mut ModelInstance) -> OrchestratorResult<()> {
     unload_model(instance).map_err(|e| OrchestratorError::ModelLoadFailed(e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The orchestrator's GPU-to-CPU fallback works by setting "CPU": that
+    /// must give a pass with no GPU layers at all.
+    #[test]
+    fn the_cpu_setting_offloads_no_layers() {
+        assert_eq!(gpu_layers_for(Some("CPU"), || 28), 0);
+        assert_eq!(gpu_layers_for(Some("cpu"), || 28), 0);
+        assert_eq!(gpu_layers_for(None, || 28), 0);
+    }
+
+    /// Control: the GPU setting takes what fits.
+    #[test]
+    fn the_gpu_setting_offloads_what_fits() {
+        assert_eq!(gpu_layers_for(Some("GPU"), || 28), 28);
+        assert!(uses_gpu(Some("GPU")));
+    }
 }
