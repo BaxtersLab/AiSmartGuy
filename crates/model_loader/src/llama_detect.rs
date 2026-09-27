@@ -24,46 +24,46 @@ pub fn llama_local_path() -> PathBuf {
 /// Detect llama-cli: check local install dir first, then PATH.
 /// Returns `Some(path)` if found, `None` otherwise.
 pub fn detect_llama() -> Option<PathBuf> {
-    let local = llama_local_path();
+    detect_llama_in(&llama_install_dir(), &std::env::var_os("PATH").unwrap_or_default())
+}
+
+/// `detect_llama` with its two inputs explicit, so it can be tested without
+/// touching the process environment. The local install wins over PATH.
+///
+/// PATH used to be searched by spawning `where`, which exists only on
+/// Windows: on Linux the spawn failed and PATH was never searched at all, so
+/// the Ubuntu archive's `llama-completion` (package llama.cpp-tools, in
+/// /usr/bin) was invisible and a clean install reported LLAMA_NOT_INSTALLED.
+pub fn detect_llama_in(install_dir: &std::path::Path, path: &std::ffi::OsStr) -> Option<PathBuf> {
+    let local = install_dir.join(LLAMA_BIN);
     if local.is_file() {
         return Some(local);
     }
-
-    // Check PATH
-    if let Ok(output) = std::process::Command::new("where")
-        .arg(LLAMA_BIN)
-        .output()
-    {
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            if let Some(line) = stdout.lines().next() {
-                let p = PathBuf::from(line.trim());
-                if p.is_file() {
-                    return Some(p);
-                }
-            }
-        }
-    }
-
-    // Also check bare "llama" / "llama.exe" in case of older installs
+    // Also a bare "llama" / "llama.exe", for older installs.
     #[cfg(target_os = "windows")]
     let alt = "llama.exe";
     #[cfg(not(target_os = "windows"))]
     let alt = "llama";
+    find_on_path(LLAMA_BIN, path).or_else(|| find_on_path(alt, path))
+}
 
-    if let Ok(output) = std::process::Command::new("where").arg(alt).output() {
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            if let Some(line) = stdout.lines().next() {
-                let p = PathBuf::from(line.trim());
-                if p.is_file() {
-                    return Some(p);
-                }
-            }
-        }
-    }
+/// The first executable called `name` in the PATH-style list `path`.
+fn find_on_path(name: &str, path: &std::ffi::OsStr) -> Option<PathBuf> {
+    std::env::split_paths(path)
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .map(|dir| dir.join(name))
+        .find(|candidate| is_executable(candidate))
+}
 
-    None
+#[cfg(unix)]
+fn is_executable(p: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    p.metadata().map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0).unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable(p: &std::path::Path) -> bool {
+    p.is_file()
 }
 
 /// Resolve the llama-cli path to use. Panics with a clear message if not found.
@@ -513,5 +513,66 @@ mod kv_tests {
         assert!(help_advertises_grammar(b"  --grammar-file FNAME  file to read", b""));
         assert!(help_advertises_grammar(b"", b"  --grammar-file FNAME  file to read"));
         assert!(!help_advertises_grammar(b"usage: llama-completion [options]", b"--grammar GRAMMAR"));
+    }
+}
+
+#[cfg(all(test, unix))]
+mod detect_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn tempdir(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("asg_detect_{}_{}", tag, std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn put(dir: &std::path::Path, name: &str, mode: u32) -> PathBuf {
+        let p = dir.join(name);
+        std::fs::write(&p, b"#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(mode)).unwrap();
+        p
+    }
+
+    /// The archive's llama-completion lives in /usr/bin. With no local
+    /// install, PATH must be searched -- it never was on Linux (`where`).
+    #[test]
+    fn llama_on_path_is_found_when_nothing_is_installed_locally() {
+        let root = tempdir("path");
+        let empty = root.join("empty");
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&empty).unwrap();
+        std::fs::create_dir_all(&bin).unwrap();
+        let exe = put(&bin, LLAMA_BIN, 0o755);
+        let path = std::env::join_paths([empty.as_path(), bin.as_path()]).unwrap();
+        let found = detect_llama_in(&root.join("no-local-install"), &path);
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(found, Some(exe));
+    }
+
+    #[test]
+    fn a_non_executable_file_on_path_is_not_llama() {
+        let root = tempdir("noexec");
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        put(&bin, LLAMA_BIN, 0o644);
+        let found = detect_llama_in(&root.join("none"), bin.as_os_str());
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(found, None);
+    }
+
+    #[test]
+    fn the_local_install_wins_over_path() {
+        let root = tempdir("local");
+        let install = root.join("install");
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&install).unwrap();
+        std::fs::create_dir_all(&bin).unwrap();
+        let local = put(&install, LLAMA_BIN, 0o755);
+        put(&bin, LLAMA_BIN, 0o755);
+        let found = detect_llama_in(&install, bin.as_os_str());
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(found, Some(local));
     }
 }
