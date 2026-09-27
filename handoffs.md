@@ -2,6 +2,21 @@
 
 _Append-only (Article VIII). Newest entry at the top._
 
+## [2026-09-27] — The PDF-wrap regression test cleans up even when the crash returns
+
+**Done:** `write_final_pdf_survives_a_multibyte_character_at_the_wrap_point`
+(`crates/pdf_io/src/pdf_writer.rs`) now runs `write_final_pdf` inside
+`catch_unwind`, so its temp dir is removed before the test reports. Before, a
+return of the crash panicked past the cleanup and left `/tmp/asg_pdf_wrap_<pid>`
+behind (Article IX.6). Operator-approved third owner-review commit.
+**Remaining:** none from this change.
+**Decisions:** test-only change; product code untouched.
+**Open Stubs:** None.
+**Verification:** with fix (a) reverted in a disposable copy, the old test failed
+and left `/tmp/asg_pdf_wrap_1332655`; the new test still fails (2 of 7 wrap tests)
+and leaves nothing. Fixed tree: 7/7 wrap tests pass. Full gate and fresh-clone
+counts are in the owner-review report.
+
 ## [2026-09-27] — Owner review: the stacked tree committed, six review defects fixed, 23 tests added
 
 The tree had sat uncommitted since `b18c755` (2026-07-17): 26 modified and 28

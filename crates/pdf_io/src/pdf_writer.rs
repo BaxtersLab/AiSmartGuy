@@ -357,16 +357,22 @@ mod wrap_tests {
 
     /// Same defect at the real entry point: the panic fired inside
     /// write_final_pdf, the last step of a run, after every model had finished.
+    /// The call is caught so the temp dir is removed even if that panic
+    /// comes back.
     #[test]
     fn write_final_pdf_survives_a_multibyte_character_at_the_wrap_point() {
         let dir = std::env::temp_dir().join(format!("asg_pdf_wrap_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let out = dir.join("report.pdf");
         let body = format!("{}\u{2014}tail\nsecond line", "a".repeat(89));
-        let result = write_final_pdf(Path::new("unused.pdf"), &body, "{}", &out);
+        let result = std::panic::catch_unwind(|| {
+            write_final_pdf(Path::new("unused.pdf"), &body, "{}", &out)
+        });
         let written = out.is_file();
         let _ = std::fs::remove_dir_all(&dir);
-        result.expect("write_final_pdf must not fail on UTF-8 text");
+        result
+            .expect("write_final_pdf panicked on UTF-8 text")
+            .expect("write_final_pdf must not fail on UTF-8 text");
         assert!(written, "report PDF must be written");
     }
 }
