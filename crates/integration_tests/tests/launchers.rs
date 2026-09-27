@@ -146,6 +146,7 @@ fn installed_launcher_scrubs_a_vscode_environment() {
     let l = launch(&root, &link, &vscode_env(&root));
     let _ = std::fs::remove_dir_all(&root);
     assert_scrubbed(&l);
+    assert_eq!(l.env["GDK_BACKEND"], "x11");
     assert!(l.cwd.ends_with("/app"));
 }
 
@@ -156,4 +157,14 @@ fn installed_launcher_from_a_clean_environment() {
     let _ = std::fs::remove_dir_all(&root);
     assert_eq!(l.args, ["--flag"]);
     assert!(!l.env.contains_key("ELECTRON_RUN_AS_NODE"));
+    assert_eq!(l.env["GDK_BACKEND"], "x11", "the close button needs mutter's titlebar");
+}
+
+#[test]
+fn installed_launcher_overrides_an_inherited_wayland_backend() {
+    let (root, link) = stage("pkg_wl", "packaging/run.sh", "aismartguy-app", false);
+    let l = launch(&root, &link, &[("HOME", root.display().to_string()), ("PATH", "/usr/bin:/bin".into()),
+                                   ("GDK_BACKEND", "wayland".into())]);
+    let _ = std::fs::remove_dir_all(&root);
+    assert_eq!(l.env["GDK_BACKEND"], "x11");
 }
