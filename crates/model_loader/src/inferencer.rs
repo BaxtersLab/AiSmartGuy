@@ -226,3 +226,48 @@ fn diagnose_failure(
 
     String::new()
 }
+
+#[cfg(test)]
+mod cancel_tests {
+    use super::*;
+    use crate::types::ModelConfig;
+    use std::path::PathBuf;
+
+    /// Terminate Run used to stop only the pass in flight: the next
+    /// run_inference call spawned a fresh llama child regardless. With a
+    /// cancel already requested it must refuse before spawning anything.
+    #[test]
+    fn requested_cancel_refuses_before_spawning() {
+        let _guard = crate::cancel::test_lock();
+        let cfg = ModelConfig {
+            model_path: PathBuf::from("does-not-exist.gguf"),
+            context_length: 4096,
+            gpu_setting: "CPU".to_string(),
+        };
+        let mut instance = ModelInstance::new(cfg, 0);
+        instance.state = ModelState::Loaded;
+        let request = InferenceRequest {
+            chunk_id: 0,
+            prompt_path: PathBuf::from("does-not-exist-prompt.txt"),
+            output_path: PathBuf::from("does-not-exist-output.txt"),
+            log_path: PathBuf::from("does-not-exist.log"),
+            grammar_file: None,
+        };
+
+        crate::cancel::request();
+        let result = run_inference(&mut instance, &request, Duration::from_secs(5));
+        crate::cancel::clear();
+
+        assert!(
+            matches!(result, Err(ModelError::Cancelled(_))),
+            "expected Cancelled, got {:?}",
+            result
+        );
+        assert!(
+            matches!(instance.state, ModelState::Loaded),
+            "a refused call must not start an inference (state {:?})",
+            instance.state
+        );
+        assert!(instance.child.is_none(), "no llama process may be spawned");
+    }
+}

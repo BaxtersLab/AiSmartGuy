@@ -409,21 +409,43 @@ fn library_pref_path(app: &AppHandle) -> Result<PathBuf, String> {
 /// requiring them inside the app's private data directory means copying 5 GB
 /// per model just to make the app notice it.
 fn model_library_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    if let Ok(p) = library_pref_path(app) {
-        if let Ok(saved) = std::fs::read_to_string(&p) {
-            let saved = saved.trim();
-            // Fall through to the default if the saved path has gone away —
-            // an unplugged drive should not make the app unusable.
-            if !saved.is_empty() && PathBuf::from(saved).is_dir() {
-                return Ok(PathBuf::from(saved));
-            }
-        }
+    let saved = library_pref_path(app)
+        .ok()
+        .and_then(|p| std::fs::read_to_string(p).ok());
+    if let Some(dir) = saved_library_dir(saved.as_deref()) {
+        return Ok(dir);
     }
     let base = app.path().app_local_data_dir()
         .map_err(|e| format!("cannot resolve app data dir: {}", e))?;
     let dir = base.join("models");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir)
+}
+
+/// The saved library choice, if it still names a folder. `None` sends the
+/// caller to the default — an unplugged drive must not make the app unusable.
+fn saved_library_dir(saved: Option<&str>) -> Option<PathBuf> {
+    let saved = saved?.trim();
+    if !saved.is_empty() && PathBuf::from(saved).is_dir() {
+        Some(PathBuf::from(saved))
+    } else {
+        None
+    }
+}
+
+/// Check a typed or pasted library path. `Ok(None)` means "reset to the
+/// default" (empty input); anything that is not an existing folder is an
+/// error and is never stored.
+fn parse_library_input(input: &str) -> Result<Option<PathBuf>, String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let p = PathBuf::from(trimmed);
+    if !p.is_dir() {
+        return Err(format!("not a folder: {}", trimmed));
+    }
+    Ok(Some(p))
 }
 
 /// Open a folder picker and remember the chosen model library.
@@ -459,16 +481,12 @@ fn cmd_reset_model_library(app: AppHandle) -> Result<String, String> {
 /// would see the default without ever being told their entry was refused.
 #[tauri::command]
 fn cmd_set_model_library(app: AppHandle, path: String) -> Result<String, String> {
-    let trimmed = path.trim();
-    if trimmed.is_empty() {
+    let Some(dir) = parse_library_input(&path)? else {
         return cmd_reset_model_library(app);
-    }
-    let p = PathBuf::from(trimmed);
-    if !p.is_dir() {
-        return Err(format!("not a folder: {}", trimmed));
-    }
-    std::fs::write(library_pref_path(&app)?, trimmed).map_err(|e| e.to_string())?;
-    Ok(trimmed.to_string())
+    };
+    let dir = dir.to_string_lossy().into_owned();
+    std::fs::write(library_pref_path(&app)?, &dir).map_err(|e| e.to_string())?;
+    Ok(dir)
 }
 
 /// Which library is in force, and whether it is the operator's choice or the
@@ -624,9 +642,15 @@ fn cmd_list_library_subfolders(app: AppHandle, base_dir: String) -> Result<Vec<L
     if !dir.is_dir() {
         return Err(format!("not a directory: {}", dir.display()));
     }
+    list_library_subfolders(&dir)
+}
 
+/// Every subfolder of `dir`, with the .gguf files inside each. Symlinked
+/// folders count: linking a big library into place is the obvious way to
+/// avoid copying gigabytes.
+fn list_library_subfolders(dir: &std::path::Path) -> Result<Vec<LibrarySubfolder>, String> {
     let mut folders = Vec::new();
-    let rd = std::fs::read_dir(&dir).map_err(|e| e.to_string())?;
+    let rd = std::fs::read_dir(dir).map_err(|e| e.to_string())?;
     for item in rd.flatten() {
         // `DirEntry::file_type` does NOT follow symlinks, so a symlinked model
         // folder reports as a symlink and would be skipped. `path().is_dir()`
@@ -1343,6 +1367,124 @@ fn cmd_detect_llama() -> String {
 /// Download and install llama.cpp into ~/.aismartguy/llama-cpp/.
 /// Picks CUDA 12.4 build if nvidia-smi works, otherwise CPU build.
 /// Emits "llama-install-progress" events.
+/// Release-asset name pattern for this platform: `(preferred keyword,
+/// fallback keyword, archive extension)`.
+///
+/// Upstream names assets per platform:
+///   Windows  llama-<build>-bin-win-<backend>-x64.zip
+///   Linux    llama-<build>-bin-ubuntu-<backend>-x64.tar.gz
+///
+/// There is NO prebuilt CUDA build for Ubuntu — verified against release
+/// b10237, whose ubuntu assets are plain / vulkan / rocm / sycl / openvino
+/// only. So an NVIDIA GPU on Linux takes the VULKAN build, which is the
+/// portable GPU backend upstream actually publishes there.
+fn llama_asset_pattern(has_nvidia: bool) -> (&'static str, &'static str, &'static str) {
+    #[cfg(target_os = "windows")]
+    let pattern = if has_nvidia {
+        ("bin-win-cuda-12.4-x64", "bin-win-cpu-x64", ".zip")
+    } else {
+        ("bin-win-cpu-x64", "bin-win-cpu-x64", ".zip")
+    };
+    #[cfg(not(target_os = "windows"))]
+    let pattern = if has_nvidia {
+        ("bin-ubuntu-vulkan-x64", "bin-ubuntu-x64", ".tar.gz")
+    } else {
+        ("bin-ubuntu-x64", "bin-ubuntu-x64", ".tar.gz")
+    };
+    pattern
+}
+
+/// First `llama-*` release asset whose name contains `keyword` and ends in
+/// `archive_ext`, as `(name, download url)`.
+fn find_llama_asset(
+    assets: &[serde_json::Value],
+    keyword: &str,
+    archive_ext: &str,
+) -> Option<(String, String)> {
+    assets.iter().find_map(|a| {
+        let name = a["name"].as_str().unwrap_or("");
+        let url = a["browser_download_url"].as_str().unwrap_or("");
+        if name.contains(keyword) && name.starts_with("llama-") && name.ends_with(archive_ext) {
+            Some((name.to_string(), url.to_string()))
+        } else {
+            None
+        }
+    })
+}
+
+/// The release asset to install: the preferred build for this platform and
+/// GPU, else the plain fallback build.
+fn choose_llama_asset(assets: &[serde_json::Value], has_nvidia: bool) -> Option<(String, String)> {
+    let (keyword, fallback, archive_ext) = llama_asset_pattern(has_nvidia);
+    find_llama_asset(assets, keyword, archive_ext)
+        .or_else(|| find_llama_asset(assets, fallback, archive_ext))
+}
+
+/// Unpack a llama.cpp Linux release tarball FLATTENED into `install_dir`.
+///
+/// The tarball nests everything under build/bin/, and the binaries locate their
+/// shared objects via RUNPATH=$ORIGIN, so they must end up adjacent. Every
+/// entry is reduced to its bare file name, so nothing can land outside
+/// `install_dir` whatever path the archive names.
+#[cfg(not(target_os = "windows"))]
+fn extract_llama_tar_gz(
+    bytes: &[u8],
+    install_dir: &std::path::Path,
+    label: &str,
+) -> Result<(), String> {
+    let dec = flate2::read::GzDecoder::new(std::io::Cursor::new(bytes));
+    let mut archive = tar::Archive::new(dec);
+    archive.set_preserve_permissions(true);
+
+    for entry in archive.entries()
+        .map_err(|e| format!("tar open {} failed: {}", label, e))?
+    {
+        let mut entry = entry.map_err(|e| format!("tar entry error: {}", e))?;
+        let entry_type = entry.header().entry_type();
+        let path = entry.path()
+            .map_err(|e| format!("tar path error: {}", e))?
+            .into_owned();
+        let file_name = match path.file_name() {
+            Some(f) if !f.is_empty() => f.to_owned(),
+            _ => continue,
+        };
+        let out_path = install_dir.join(&file_name);
+
+        // SONAME symlinks are load-bearing. The tarball ships
+        // libggml-base.so.0 -> libggml-base.so.0.18.0 and friends, and
+        // binaries record DT_NEEDED by SONAME — drop the links and every
+        // executable dies at startup with "error while loading shared
+        // libraries", even though the real file is sitting right there.
+        // Retargeted to the basename because this tree is flattened.
+        if entry_type.is_symlink() || entry_type.is_hard_link() {
+            let target = entry.link_name()
+                .map_err(|e| format!("tar link error: {}", e))?
+                .ok_or_else(|| format!("link {} has no target",
+                                       file_name.to_string_lossy()))?;
+            let target_name = match target.file_name() {
+                Some(t) if !t.is_empty() => t.to_owned(),
+                _ => continue,
+            };
+            let _ = std::fs::remove_file(&out_path);
+            std::os::unix::fs::symlink(&target_name, &out_path)
+                .map_err(|e| format!("link {} failed: {}",
+                                     file_name.to_string_lossy(), e))?;
+            continue;
+        }
+
+        if !entry_type.is_file() { continue; }
+
+        // unpack() applies the mode from the tar header — without the
+        // executable bit the install "succeeds" and then every run fails
+        // with Permission denied.
+        let _ = std::fs::remove_file(&out_path);
+        entry.unpack(&out_path)
+            .map_err(|e| format!("extract {} failed: {}",
+                                 file_name.to_string_lossy(), e))?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn cmd_install_llama(app: AppHandle) -> Result<String, String> {
     let install_dir = model_loader::llama_install_dir();
@@ -1376,18 +1518,6 @@ fn cmd_install_llama(app: AppHandle) -> Result<String, String> {
     // b10237, whose ubuntu assets are plain / vulkan / rocm / sycl / openvino
     // only. So an NVIDIA GPU on Linux takes the VULKAN build, which is the
     // portable GPU backend upstream actually publishes there.
-    #[cfg(target_os = "windows")]
-    let (asset_keyword, fallback_keyword, archive_ext) = if has_nvidia {
-        ("bin-win-cuda-12.4-x64", "bin-win-cpu-x64", ".zip")
-    } else {
-        ("bin-win-cpu-x64", "bin-win-cpu-x64", ".zip")
-    };
-    #[cfg(not(target_os = "windows"))]
-    let (asset_keyword, fallback_keyword, archive_ext) = if has_nvidia {
-        ("bin-ubuntu-vulkan-x64", "bin-ubuntu-x64", ".tar.gz")
-    } else {
-        ("bin-ubuntu-x64", "bin-ubuntu-x64", ".tar.gz")
-    };
 
     app.emit("llama-install-progress", serde_json::json!({
         "percent": 10, "message": "Querying latest llama.cpp release…"
@@ -1418,21 +1548,8 @@ fn cmd_install_llama(app: AppHandle) -> Result<String, String> {
         .as_array()
         .ok_or("no assets in release")?;
 
-    // Find the main binary zip (not cudart)
-    let find_asset = |keyword: &str| -> Option<(String, String)> {
-        assets.iter().find_map(|a| {
-            let name = a["name"].as_str().unwrap_or("");
-            let url = a["browser_download_url"].as_str().unwrap_or("");
-            if name.contains(keyword) && name.starts_with("llama-") && name.ends_with(archive_ext) {
-                Some((name.to_string(), url.to_string()))
-            } else {
-                None
-            }
-        })
-    };
-
-    let (asset_name, download_url) = find_asset(asset_keyword)
-        .or_else(|| find_asset(fallback_keyword))
+    // Find the main binary archive (not cudart)
+    let (asset_name, download_url) = choose_llama_asset(assets, has_nvidia)
         .ok_or("could not find a suitable llama.cpp release asset")?;
 
     // Also grab cudart if using CUDA
@@ -1502,58 +1619,7 @@ fn cmd_install_llama(app: AppHandle) -> Result<String, String> {
         }
 
         #[cfg(not(target_os = "windows"))]
-        {
-            let dec = flate2::read::GzDecoder::new(std::io::Cursor::new(&bytes));
-            let mut archive = tar::Archive::new(dec);
-            archive.set_preserve_permissions(true);
-
-            for entry in archive.entries()
-                .map_err(|e| format!("tar open {} failed: {}", label, e))?
-            {
-                let mut entry = entry.map_err(|e| format!("tar entry error: {}", e))?;
-                let entry_type = entry.header().entry_type();
-                let path = entry.path()
-                    .map_err(|e| format!("tar path error: {}", e))?
-                    .into_owned();
-                let file_name = match path.file_name() {
-                    Some(f) if !f.is_empty() => f.to_owned(),
-                    _ => continue,
-                };
-                let out_path = install_dir.join(&file_name);
-
-                // SONAME symlinks are load-bearing. The tarball ships
-                // libggml-base.so.0 -> libggml-base.so.0.18.0 and friends, and
-                // binaries record DT_NEEDED by SONAME — drop the links and every
-                // executable dies at startup with "error while loading shared
-                // libraries", even though the real file is sitting right there.
-                // Retargeted to the basename because this tree is flattened.
-                if entry_type.is_symlink() || entry_type.is_hard_link() {
-                    let target = entry.link_name()
-                        .map_err(|e| format!("tar link error: {}", e))?
-                        .ok_or_else(|| format!("link {} has no target",
-                                               file_name.to_string_lossy()))?;
-                    let target_name = match target.file_name() {
-                        Some(t) if !t.is_empty() => t.to_owned(),
-                        _ => continue,
-                    };
-                    let _ = std::fs::remove_file(&out_path);
-                    std::os::unix::fs::symlink(&target_name, &out_path)
-                        .map_err(|e| format!("link {} failed: {}",
-                                             file_name.to_string_lossy(), e))?;
-                    continue;
-                }
-
-                if !entry_type.is_file() { continue; }
-
-                // unpack() applies the mode from the tar header — without the
-                // executable bit the install "succeeds" and then every run fails
-                // with Permission denied.
-                let _ = std::fs::remove_file(&out_path);
-                entry.unpack(&out_path)
-                    .map_err(|e| format!("extract {} failed: {}",
-                                         file_name.to_string_lossy(), e))?;
-            }
-        }
+        extract_llama_tar_gz(&bytes, &install_dir, label)?;
 
         Ok(())
     };
@@ -1653,4 +1719,235 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("failed to start AiSmartGuy");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    /// A fresh, empty directory under the system temp dir for one test.
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("asg_app_{}_{}", tag, std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    // ── model library override ─────────────────────────────────────────
+
+    #[test]
+    fn saved_library_is_used_while_it_exists() {
+        let dir = scratch("lib_saved");
+        let saved = format!("{}\n", dir.display()); // as read back from the pref file
+        let got = saved_library_dir(Some(&saved));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(got, Some(dir));
+    }
+
+    /// An unplugged drive: the saved folder is gone, so the caller must fall
+    /// back to the default rather than fail.
+    #[test]
+    fn saved_library_that_has_gone_away_falls_back() {
+        let dir = scratch("lib_gone");
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(saved_library_dir(Some(&dir.to_string_lossy())), None);
+        assert_eq!(saved_library_dir(Some("   ")), None);
+        assert_eq!(saved_library_dir(None), None);
+    }
+
+    /// A typed path that is not a folder is refused, never stored — a stored
+    /// bad path would silently fall back and the operator would never know.
+    #[test]
+    fn library_input_refuses_anything_but_an_existing_folder() {
+        let dir = scratch("lib_input");
+        let file = dir.join("model.gguf");
+        std::fs::write(&file, b"x").unwrap();
+        let missing = dir.join("no-such-folder");
+
+        let as_file = parse_library_input(&file.to_string_lossy());
+        let as_missing = parse_library_input(&missing.to_string_lossy());
+        let padded = parse_library_input(&format!("  {}  ", dir.display()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(as_file.unwrap_err().starts_with("not a folder"));
+        assert!(as_missing.is_err());
+        assert_eq!(padded, Ok(Some(dir)));
+        assert_eq!(parse_library_input("   "), Ok(None), "empty input means reset");
+    }
+
+    /// `DirEntry::file_type` does not follow symlinks, so a symlinked model
+    /// folder was silently skipped.
+    #[cfg(unix)]
+    #[test]
+    fn library_scan_follows_symlinked_model_folders() {
+        let root = scratch("lib_scan");
+        let lib = root.join("library");
+        let elsewhere = root.join("other-disk").join("mistral");
+        std::fs::create_dir_all(lib.join("llama")).unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::write(lib.join("llama").join("llama.gguf"), b"x").unwrap();
+        std::fs::write(elsewhere.join("mistral.gguf"), b"x").unwrap();
+        std::os::unix::fs::symlink(&elsewhere, lib.join("mistral")).unwrap();
+        std::fs::write(lib.join("notes.txt"), b"not a folder").unwrap();
+
+        let folders = list_library_subfolders(&lib);
+        let _ = std::fs::remove_dir_all(&root);
+
+        let folders = folders.unwrap();
+        let names: Vec<&str> = folders.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["llama", "mistral"]);
+        assert_eq!(folders[1].gguf_files.len(), 1);
+        assert_eq!(folders[1].gguf_files[0].filename, "mistral.gguf");
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn folders_open_with_xdg_open_on_linux() {
+        // explorer.exe was hardcoded: both folder buttons failed on Linux.
+        assert_eq!(FILE_MANAGER, "xdg-open");
+    }
+
+    // ── llama.cpp installer ────────────────────────────────────────────
+
+    /// Asset names in the shape upstream publishes (release b10246).
+    fn release_assets(include_vulkan: bool) -> Vec<serde_json::Value> {
+        let mut names = vec![
+            "cudart-llama-bin-win-cuda-12.4-x64.zip",
+            "llama-b10246-bin-win-cuda-12.4-x64.zip",
+            "llama-b10246-bin-win-cpu-x64.zip",
+            "llama-b10246-bin-macos-arm64.tar.gz",
+            "llama-b10246-bin-ubuntu-rocm-x64.tar.gz",
+            "llama-b10246-bin-ubuntu-x64.tar.gz",
+        ];
+        if include_vulkan {
+            names.push("llama-b10246-bin-ubuntu-vulkan-x64.tar.gz");
+        }
+        names
+            .into_iter()
+            .map(|n| serde_json::json!({ "name": n, "browser_download_url": format!("https://example.invalid/{n}") }))
+            .collect()
+    }
+
+    /// The installer picked Windows .zip assets on every platform, so even a
+    /// successful download installed binaries Linux cannot run.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn linux_installer_picks_the_ubuntu_tarball() {
+        let all = release_assets(true);
+        let gpu = choose_llama_asset(&all, true).map(|(name, _)| name);
+        let cpu = choose_llama_asset(&all, false).map(|(name, _)| name);
+        let no_vulkan = choose_llama_asset(&release_assets(false), true).map(|(name, _)| name);
+        assert_eq!(gpu.as_deref(), Some("llama-b10246-bin-ubuntu-vulkan-x64.tar.gz"));
+        assert_eq!(cpu.as_deref(), Some("llama-b10246-bin-ubuntu-x64.tar.gz"));
+        assert_eq!(no_vulkan.as_deref(), Some("llama-b10246-bin-ubuntu-x64.tar.gz"));
+    }
+
+    /// Build a gzipped tarball shaped like a llama.cpp Linux release.
+    #[cfg(unix)]
+    fn release_tarball() -> Vec<u8> {
+        let gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        let mut tar = tar::Builder::new(gz);
+
+        let mut file = |path: &str, body: &[u8], mode: u32| {
+            let mut h = tar::Header::new_gnu();
+            h.set_size(body.len() as u64);
+            h.set_mode(mode);
+            tar.append_data(&mut h, path, body).unwrap();
+        };
+        file("build/bin/llama-completion", b"#!/bin/sh\n", 0o755);
+        file("build/bin/libggml-base.so.0.18.0", b"real library", 0o644);
+
+        let mut link = tar::Header::new_gnu();
+        link.set_entry_type(tar::EntryType::Symlink);
+        link.set_size(0);
+        link.set_link_name("libggml-base.so.0.18.0").unwrap();
+        tar.append_data(&mut link, "build/bin/libggml-base.so.0", std::io::empty()).unwrap();
+
+        // A hostile path. append() writes the header as given, unvalidated.
+        let mut evil = tar::Header::new_gnu();
+        let name = b"../escape.txt";
+        evil.as_gnu_mut().unwrap().name[..name.len()].copy_from_slice(name);
+        evil.set_size(4);
+        evil.set_mode(0o644);
+        evil.set_cksum();
+        tar.append(&evil, &b"evil"[..]).unwrap();
+
+        tar.into_inner().unwrap().finish().unwrap()
+    }
+
+    /// Dropping the SONAME symlinks made every binary die with "error while
+    /// loading shared libraries"; losing the mode made them "Permission
+    /// denied". Every entry must land flat inside install_dir.
+    #[cfg(unix)]
+    #[test]
+    fn tarball_extracts_flat_with_symlinks_and_modes() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = scratch("tar");
+        let install = root.join("llama-cpp");
+        std::fs::create_dir_all(&install).unwrap();
+
+        let result = extract_llama_tar_gz(&release_tarball(), &install, "test");
+
+        let bin_mode = std::fs::metadata(install.join("llama-completion")).map(|m| m.permissions().mode());
+        let link = std::fs::read_link(install.join("libggml-base.so.0"));
+        let through_link = std::fs::read(install.join("libggml-base.so.0"));
+        let escaped_inside = install.join("escape.txt").is_file();
+        let escaped_outside = root.join("escape.txt").exists();
+        let _ = std::fs::remove_dir_all(&root);
+
+        result.unwrap();
+        assert_ne!(bin_mode.unwrap() & 0o111, 0, "binary must stay executable");
+        assert_eq!(link.unwrap(), Path::new("libggml-base.so.0.18.0"));
+        assert_eq!(through_link.unwrap(), b"real library");
+        assert!(escaped_inside, "a ../ entry is flattened into install_dir");
+        assert!(!escaped_outside, "nothing may be written outside install_dir");
+    }
+
+    // ── context-size VRAM profile ──────────────────────────────────────
+
+    /// Minimal GGUF v3 metadata: 32 layers, head dim 128, `kv_heads` KV heads.
+    fn gguf_model(dir: &Path, name: &str, kv_heads: u32, native_ctx: u32) {
+        std::fs::create_dir_all(dir).unwrap();
+        let kvs: [(&str, u32); 5] = [
+            ("llama.block_count", 32),
+            ("llama.attention.head_count", 32),
+            ("llama.attention.head_count_kv", kv_heads),
+            ("llama.attention.key_length", 128),
+            ("llama.context_length", native_ctx),
+        ];
+        let mut b = Vec::new();
+        b.extend_from_slice(b"GGUF");
+        b.extend_from_slice(&3u32.to_le_bytes());
+        b.extend_from_slice(&0u64.to_le_bytes());
+        b.extend_from_slice(&(kvs.len() as u64).to_le_bytes());
+        for (k, v) in kvs {
+            b.extend_from_slice(&(k.len() as u64).to_le_bytes());
+            b.extend_from_slice(k.as_bytes());
+            b.extend_from_slice(&4u32.to_le_bytes());
+            b.extend_from_slice(&v.to_le_bytes());
+        }
+        std::fs::write(dir.join(name), b).unwrap();
+    }
+
+    /// The context setting applies to every lane at once, so the labels must
+    /// be priced for the MOST expensive selected model, not the first.
+    #[test]
+    fn vram_profile_reports_the_most_expensive_lane_model() {
+        let root = scratch("vram");
+        gguf_model(&root.join("cheap"), "cheap-gqa.gguf", 8, 32768);
+        gguf_model(&root.join("costly"), "costly-mha.gguf", 32, 8192);
+        let dirs = vec![
+            root.join("cheap").to_string_lossy().into_owned(),
+            String::new(), // an empty lane is skipped
+            root.join("costly").to_string_lossy().into_owned(),
+        ];
+        let profile = cmd_ctx_vram_profile(dirs);
+        let _ = std::fs::remove_dir_all(&root);
+
+        let profile = profile.expect("two readable models");
+        assert_eq!(profile.model_name, "costly-mha");
+        assert_eq!(profile.kv_bytes_per_token, 2 * 32 * 32 * 128 * 2);
+        assert_eq!(profile.native_ctx, 8192);
+    }
 }

@@ -85,11 +85,7 @@ pub fn llama_supports_grammar() -> bool {
         std::process::Command::new(&path)
             .arg("--help")
             .output()
-            .map(|o| {
-                let out = String::from_utf8_lossy(&o.stdout);
-                let err = String::from_utf8_lossy(&o.stderr);
-                out.contains("--grammar-file") || err.contains("--grammar-file")
-            })
+            .map(|o| help_advertises_grammar(&o.stdout, &o.stderr))
             .unwrap_or(false)
     })
 }
@@ -148,15 +144,13 @@ fn gguf_read_u32_key(model_path: &std::path::Path, suffix: &str) -> Option<u32> 
     None
 }
 
-/// Compute the maximum context length the hardware can realistically handle
-/// for the given model without OOM.
-///
-/// Works backwards from VRAM: subtracts a minimum GPU-layer reservation
-/// (at least 8 layers or 25% of model, whichever is larger), overhead, and
-/// then converts remaining VRAM into KV-cache capacity using the same
-/// heuristic as `auto_gpu_layers`.
-///
-/// Returns `None` if VRAM/model info is unavailable (caller should fall back
+/// True if a llama.cpp `--help` output lists `--grammar-file`. Builds differ
+/// in which stream they print usage to, so both are checked.
+fn help_advertises_grammar(stdout: &[u8], stderr: &[u8]) -> bool {
+    String::from_utf8_lossy(stdout).contains("--grammar-file")
+        || String::from_utf8_lossy(stderr).contains("--grammar-file")
+}
+
 /// Bytes of KV cache consumed per token, read from the model's own metadata.
 ///
 /// WHY THIS IS NOT A CONSTANT
@@ -222,6 +216,15 @@ fn kv_reserve_mb(model_path: &std::path::Path, ctx_tokens: u32) -> u32 {
     }
 }
 
+/// Compute the maximum context length the hardware can realistically handle
+/// for the given model without OOM.
+///
+/// Works backwards from VRAM: subtracts a minimum GPU-layer reservation
+/// (at least 8 layers or 25% of model, whichever is larger), overhead, and
+/// then converts remaining VRAM into KV-cache capacity at the model's real
+/// per-token cost ([`kv_bytes_per_token`]).
+///
+/// Returns `None` if VRAM/model info is unavailable (caller should fall back
 /// to a safe default).
 pub fn max_context_for_vram(model_path: &std::path::Path, vram_mb: u32) -> Option<u32> {
     let file_size_mb = std::fs::metadata(model_path)
@@ -239,7 +242,6 @@ pub fn max_context_for_vram(model_path: &std::path::Path, vram_mb: u32) -> Optio
     let overhead = 300_u32; // CUDA scratch + embedding tables
 
     let vram_for_kv = vram_mb.saturating_sub(layer_reservation).saturating_sub(overhead);
-    // KV heuristic: ~1 MB per 16 tokens (same as auto_gpu_layers).
     // Convert remaining VRAM into context using the model's REAL per-token KV
     // cost. Multiplying by 16 is the inverse of the old 64 KB/token guess, so it
     // reported a ceiling roughly twice as high as a GQA model can hold and eight
@@ -384,5 +386,132 @@ fn skip_gguf_value(f: &mut std::fs::File, vtype: u32) -> bool {
         11 => { f.seek(SeekFrom::Current(8)).ok(); true }   // INT64
         12 => read_f64_le(f).map(|_| ()).is_some(),         // FLOAT64
         _ => false, // unknown type
+    }
+}
+
+#[cfg(test)]
+mod kv_tests {
+    use super::*;
+    use std::path::{Path, PathBuf};
+
+    enum Val {
+        U32(u32),
+        Str(&'static str),
+    }
+
+    /// A minimal GGUF v3 file: header, no tensors, the given metadata, then
+    /// sparse padding so the file reports `size_mb` megabytes.
+    fn gguf(name: &str, kvs: &[(&str, Val)], size_mb: u64) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("asg_gguf_{}_{}", std::process::id(), name));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(name);
+        let mut b = Vec::new();
+        b.extend_from_slice(b"GGUF");
+        b.extend_from_slice(&3u32.to_le_bytes());
+        b.extend_from_slice(&0u64.to_le_bytes());
+        b.extend_from_slice(&(kvs.len() as u64).to_le_bytes());
+        for (k, v) in kvs {
+            b.extend_from_slice(&(k.len() as u64).to_le_bytes());
+            b.extend_from_slice(k.as_bytes());
+            match v {
+                Val::U32(x) => {
+                    b.extend_from_slice(&4u32.to_le_bytes());
+                    b.extend_from_slice(&x.to_le_bytes());
+                }
+                Val::Str(t) => {
+                    b.extend_from_slice(&8u32.to_le_bytes());
+                    b.extend_from_slice(&(t.len() as u64).to_le_bytes());
+                    b.extend_from_slice(t.as_bytes());
+                }
+            }
+        }
+        std::fs::write(&path, &b).unwrap();
+        if size_mb > 0 {
+            let f = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+            f.set_len(size_mb * 1024 * 1024).unwrap();
+        }
+        path
+    }
+
+    /// Each fixture lives alone in its own directory; remove the directory.
+    fn cleanup(path: &Path) {
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
+    /// Mistral 7B shape: 32 layers, 32 heads, 8 KV heads (GQA), head dim 128.
+    fn mistral_like(name: &str, size_mb: u64) -> PathBuf {
+        gguf(name, &[
+            ("general.architecture", Val::Str("llama")),
+            ("llama.block_count", Val::U32(32)),
+            ("llama.attention.head_count", Val::U32(32)),
+            ("llama.attention.head_count_kv", Val::U32(8)),
+            ("llama.attention.key_length", Val::U32(128)),
+        ], size_mb)
+    }
+
+    #[test]
+    fn kv_bytes_per_token_counts_kv_heads_not_all_heads() {
+        let p = mistral_like("gqa.gguf", 0);
+        let got = kv_bytes_per_token(&p);
+        cleanup(&p);
+        assert_eq!(got, Some(2 * 32 * 8 * 128 * 2)); // 128 KiB/token
+    }
+
+    /// No head_count_kv (no GQA) and no key_length: K/V for every head, head
+    /// dim derived as embedding_length / head_count.
+    #[test]
+    fn kv_bytes_per_token_without_gqa_derives_head_dim() {
+        let p = gguf("mha.gguf", &[
+            ("general.architecture", Val::Str("llama")),
+            ("llama.block_count", Val::U32(32)),
+            ("llama.attention.head_count", Val::U32(32)),
+            ("llama.embedding_length", Val::U32(4096)),
+        ], 0);
+        let got = kv_bytes_per_token(&p);
+        cleanup(&p);
+        assert_eq!(got, Some(2 * 32 * 32 * 128 * 2)); // 512 KiB/token
+    }
+
+    /// The handoff's measured case: Mistral 7B at ctx 32768 needs 4096 MB of
+    /// KV cache; the old 64 KB/token guess reserved 2048 MB.
+    #[test]
+    fn kv_reserve_uses_the_real_per_token_cost() {
+        let p = mistral_like("reserve.gguf", 0);
+        let mb = kv_reserve_mb(&p, 32768);
+        cleanup(&p);
+        assert_eq!(mb, 4096);
+    }
+
+    #[test]
+    fn kv_reserve_falls_back_when_metadata_is_unreadable() {
+        let dir = std::env::temp_dir().join(format!("asg_gguf_{}_not_gguf", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("not_gguf.bin");
+        std::fs::write(&p, b"not a gguf file").unwrap();
+        let per_token = kv_bytes_per_token(&p);
+        let mb = kv_reserve_mb(&p, 32768);
+        cleanup(&p);
+        assert_eq!(per_token, None);
+        assert_eq!(mb, 2048); // ctx / 16, the old guess, only as a fallback
+    }
+
+    /// 4096 MB model, 8192 MB VRAM: 8 layers x 120 MB and 300 MB overhead
+    /// leave 6932 MB for KV. At 128 KiB/token that is 55456 tokens, rounded
+    /// down to 55296. The old x16 rule claimed 110592 — twice what fits.
+    #[test]
+    fn max_context_for_vram_uses_the_real_per_token_cost() {
+        let p = mistral_like("vram.gguf", 4096);
+        let got = max_context_for_vram(&p, 8192);
+        cleanup(&p);
+        assert_eq!(got, Some(55296));
+    }
+
+    #[test]
+    fn grammar_flag_is_found_on_either_stream() {
+        assert!(help_advertises_grammar(b"  --grammar-file FNAME  file to read", b""));
+        assert!(help_advertises_grammar(b"", b"  --grammar-file FNAME  file to read"));
+        assert!(!help_advertises_grammar(b"usage: llama-completion [options]", b"--grammar GRAMMAR"));
     }
 }

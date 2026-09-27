@@ -78,11 +78,10 @@ pub fn enforce_timeout(
     let start = Instant::now();
     let poll_interval = Duration::from_millis(500);
     let startup_timeout = startup_timeout_for(model_path);
-    // Deadline for the "never produced any output" watchdog. Must be at
-    // least as generous as the full inference `timeout` (already scaled for
-    // CPU offload and context size by inference_timeout_for) — see the call
-    // site below for why `startup_timeout` alone is too small.
-    let zero_byte_deadline = timeout.max(startup_timeout);
+    // Deadline for the "never produced any output" watchdog — see
+    // zero_byte_deadline and the call site below for why `startup_timeout`
+    // alone is too small.
+    let zero_byte_deadline = zero_byte_deadline(timeout, startup_timeout);
 
     let mut last_output_size: u64 = 0;
     let mut last_output_change = Instant::now();
@@ -159,10 +158,9 @@ pub fn enforce_timeout(
                 // legitimately take far longer than `startup_timeout` (a 4GB
                 // model's 180s budget) without anything being "stuck". Using
                 // the small deadline here killed healthy-but-slow prefill and
-                // misreported it as a failed model load (see
-                // model_loader/src/timeout.rs.pre-aismartguy-2026-08-17.bak
-                // for the pre-fix behavior and handoffs.md for the real run
-                // this was found against).
+                // misreported it as a failed model load (the pre-fix
+                // behaviour is this file at b18c755; the real run it was
+                // found against is the 2026-08-17 test-box book run).
                 eprintln!(
                     "[model_loader][WARN] 0-byte output after {}s — killing subprocess",
                     zero_byte_deadline.as_secs()
@@ -192,6 +190,15 @@ pub fn enforce_timeout(
 
         std::thread::sleep(poll_interval);
     }
+}
+
+/// Deadline for the "never produced any output" watchdog: the full inference
+/// `timeout` (already scaled for CPU offload and context size by
+/// inference_timeout_for), never less than the model-size-only
+/// `startup_timeout`. Using `startup_timeout` alone killed healthy CPU-only
+/// prefill before its first token.
+fn zero_byte_deadline(timeout: Duration, startup_timeout: Duration) -> Duration {
+    timeout.max(startup_timeout)
 }
 
 /// True if the "process never produced any output" watchdog should fire.
@@ -240,11 +247,19 @@ mod tests {
         // model with a 32K-context, RAG-heavy prompt computes a real
         // inference timeout of 12000s (inference_timeout_for), while the
         // model-size-only startup estimate is only 180s. The watchdog must
-        // use the larger of the two.
+        // use the larger of the two — and 200s of silent prefill is healthy.
         let startup_timeout = Duration::from_secs(180);
         let real_inference_timeout = Duration::from_secs(12000);
-        let zero_byte_deadline = real_inference_timeout.max(startup_timeout);
-        assert_eq!(zero_byte_deadline, real_inference_timeout);
-        assert!(zero_byte_deadline > startup_timeout);
+        let deadline = zero_byte_deadline(real_inference_timeout, startup_timeout);
+        assert_eq!(deadline, real_inference_timeout);
+        assert!(!zero_byte_stuck(0, Duration::from_secs(200), deadline));
+    }
+
+    /// The other side of the max: a very short inference timeout must not
+    /// shrink the watchdog below the time the model needs just to load.
+    #[test]
+    fn zero_byte_deadline_never_drops_below_the_startup_budget() {
+        let deadline = zero_byte_deadline(Duration::from_secs(60), Duration::from_secs(180));
+        assert_eq!(deadline, Duration::from_secs(180));
     }
 }

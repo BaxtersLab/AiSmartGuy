@@ -99,3 +99,62 @@ pub fn run_optimization_pass(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One model output in structured-findings form: two fallacy rules and
+    /// one rule with no category. No category name appears in the text, so
+    /// the keyword heuristic would score it zero.
+    const FINDINGS_OUTPUT: &str = r#"[
+        {"rule_id":"FAL-01","quote":"q1","location":"p1","severity":"high","note":"n"},
+        {"rule_id":"FAL-02","quote":"q2","location":"p2","severity":"low","note":"n"},
+        {"rule_id":"ZZZ-99","quote":"q3","location":"p3","severity":"low","note":"n"}
+    ]"#;
+
+    fn hits(history: &ScoreHistory, category: &str) -> u32 {
+        history
+            .last()
+            .unwrap()
+            .model_scores
+            .iter()
+            .find(|s| s.model_name == "model1" && s.category == category)
+            .map(|s| s.hits)
+            .unwrap()
+    }
+
+    /// In findings mode the score must come from the parsed findings, mapped
+    /// rule → category, not from counting category keywords in the text.
+    #[test]
+    fn findings_mode_scores_real_rule_counts_by_category() {
+        let dir = std::env::temp_dir().join(format!("asg_optbridge_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("chapter_001_output.txt");
+        std::fs::write(&out, FINDINGS_OUTPUT).unwrap();
+        let mut outputs = HashMap::new();
+        outputs.insert("model1".to_string(), vec![out.clone()]);
+
+        let mut rule_category = HashMap::new();
+        rule_category.insert("FAL-01".to_string(), "fallacies".to_string());
+        rule_category.insert("FAL-02".to_string(), "fallacies".to_string());
+
+        let mut manifest = manifest::default_manifest();
+        manifest.categories_active = vec!["fallacies".to_string(), "nlp_techniques".to_string()];
+
+        let mut findings_history = ScoreHistory::new();
+        let findings = run_optimization_pass(
+            &mut manifest.clone(), &outputs, &mut findings_history, Some(&rule_category));
+        // Control: the same output on the keyword path finds nothing, so a 2
+        // below can only have come from the findings.
+        let mut keyword_history = ScoreHistory::new();
+        let keyword = run_optimization_pass(&mut manifest, &outputs, &mut keyword_history, None);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        findings.unwrap();
+        keyword.unwrap();
+        assert_eq!(hits(&findings_history, "fallacies"), 2);
+        assert_eq!(hits(&findings_history, "nlp_techniques"), 0);
+        assert_eq!(hits(&keyword_history, "fallacies"), 0);
+    }
+}

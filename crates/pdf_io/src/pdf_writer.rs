@@ -35,8 +35,20 @@ fn wrap_line(line: &str, max_chars: usize) -> Vec<String> {
                 break;
             }
             if current.is_empty() {
-                // The word alone doesn't fit — hard-break it.
-                let (head, tail) = word.split_at(max_chars.min(word.len()));
+                // The word alone doesn't fit — hard-break it. Width stays in
+                // bytes (escape_pdf_str draws one glyph per byte), but the cut
+                // must land on a char boundary: a byte-indexed split inside a
+                // multi-byte character (an em dash, say) panics.
+                let mut cut = max_chars.min(word.len());
+                while !word.is_char_boundary(cut) {
+                    cut -= 1;
+                }
+                if cut == 0 {
+                    // The first character alone is wider than max_chars bytes:
+                    // take it whole so the loop always makes progress.
+                    cut = word.chars().next().map_or(word.len(), char::len_utf8);
+                }
+                let (head, tail) = word.split_at(cut);
                 out.push(head.to_string());
                 word = tail;
                 if word.is_empty() {
@@ -327,6 +339,35 @@ mod wrap_tests {
     #[test]
     fn wrap_line_empty_line_stays_a_single_empty_line() {
         assert_eq!(wrap_line("", MAX_CHARS_PER_LINE), vec![String::new()]);
+    }
+
+    /// The hard break used a byte index, and model output is UTF-8: a
+    /// spaceless run longer than the line with a multi-byte character across
+    /// the cut panicked with "byte index is not a char boundary".
+    #[test]
+    fn wrap_line_hard_break_never_splits_a_multibyte_character() {
+        // 89 ASCII bytes, then an em dash at bytes 89..92: byte 90 is inside it.
+        let word = format!("{}\u{2014}tail", "a".repeat(89));
+        let pieces = wrap_line(&word, MAX_CHARS_PER_LINE);
+        assert_eq!(pieces.concat(), word, "hard break must not lose or alter text");
+        for piece in &pieces {
+            assert!(piece.len() <= MAX_CHARS_PER_LINE);
+        }
+    }
+
+    /// Same defect at the real entry point: the panic fired inside
+    /// write_final_pdf, the last step of a run, after every model had finished.
+    #[test]
+    fn write_final_pdf_survives_a_multibyte_character_at_the_wrap_point() {
+        let dir = std::env::temp_dir().join(format!("asg_pdf_wrap_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("report.pdf");
+        let body = format!("{}\u{2014}tail\nsecond line", "a".repeat(89));
+        let result = write_final_pdf(Path::new("unused.pdf"), &body, "{}", &out);
+        let written = out.is_file();
+        let _ = std::fs::remove_dir_all(&dir);
+        result.expect("write_final_pdf must not fail on UTF-8 text");
+        assert!(written, "report PDF must be written");
     }
 }
 

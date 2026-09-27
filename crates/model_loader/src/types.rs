@@ -64,6 +64,9 @@ mod regression_tests {
     /// flag object so a cancel request set anywhere is observed everywhere.
     #[test]
     fn model_instances_share_the_cancel_flag() {
+        // This writes the process-wide flag: hold the crate's cancel lock
+        // and leave the flag cleared, or it races crate::cancel's tests.
+        let _guard = crate::cancel::test_lock();
         let cfg = ModelConfig {
             model_path: PathBuf::from("does-not-need-to-exist.gguf"),
             context_length: 4096,
@@ -81,10 +84,9 @@ mod regression_tests {
         // The property that actually matters: a value set through one
         // instance's handle must be visible through the other's.
         a.cancel.store(true, Ordering::SeqCst);
-        assert!(
-            b.cancel.load(Ordering::SeqCst),
-            "cancelling via instance A's flag must be observed by instance B"
-        );
+        let seen = b.cancel.load(Ordering::SeqCst);
+        crate::cancel::clear();
+        assert!(seen, "cancelling via instance A's flag must be observed by instance B");
     }
 }
 

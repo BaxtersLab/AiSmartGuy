@@ -273,6 +273,9 @@ impl Orchestrator {
         };
 
         let mut model_outputs: ModelOutputs = HashMap::new();
+        // The same outputs, each with the chapter it analysed (see
+        // ChapterOutputs). Built from the same vector as model_outputs.
+        let mut chapter_outputs: ChapterOutputs = HashMap::new();
         let mut partial_failures: Vec<String> = Vec::new();
 
         // ── Pre-flight: verify llama-cli is available ───────────────────────
@@ -396,7 +399,7 @@ impl Orchestrator {
                 continue;
             }
 
-            let mut chunk_outputs: Vec<PathBuf> = Vec::new();
+            let mut chunk_outputs: Vec<(usize, PathBuf)> = Vec::new();
             let mut model_had_failure = false;
 
             // One inference per (chapter × RAG pass). With a single pass this
@@ -525,7 +528,7 @@ impl Orchestrator {
                         }
                     }
 
-                    chunk_outputs.push(output_path);
+                    chunk_outputs.push((ch_idx, output_path));
 
                     // After inference the instance returns to Loaded state,
                     // ready for the next pass — no reload needed.
@@ -538,7 +541,11 @@ impl Orchestrator {
             if model_had_failure {
                 partial_failures.push(model_name.to_string());
             } else {
-                model_outputs.insert(model_name.to_string(), chunk_outputs);
+                model_outputs.insert(
+                    model_name.to_string(),
+                    chunk_outputs.iter().map(|(_, p)| p.clone()).collect(),
+                );
+                chapter_outputs.insert(model_name.to_string(), chunk_outputs);
             }
         }
 
@@ -569,17 +576,7 @@ impl Orchestrator {
                 // per-chapter prose (the existing hierarchical fold).
                 let fusion_input = if findings_grammar.is_some() {
                     // Collect every chapter's output labeled by model+chapter.
-                    let mut chapters: Vec<(String, String)> = Vec::new();
-                    let mut model_names: Vec<&String> = model_outputs.keys().collect();
-                    model_names.sort();
-                    for name in model_names {
-                        if let Some(paths) = model_outputs.get(name) {
-                            for (i, p) in paths.iter().enumerate() {
-                                let text = std::fs::read_to_string(p).unwrap_or_default();
-                                chapters.push((format!("{} · chapter {}", name, i + 1), text));
-                            }
-                        }
-                    }
+                    let chapters = findings_merge_inputs(&chapter_outputs);
                     let merged = crate::findings::merge_findings(&chapters);
 
                     // Persist the lossless artifacts to the run dir.
@@ -640,16 +637,12 @@ impl Orchestrator {
         // across all models' packets) so scoring uses REAL per-category counts
         // instead of the keyword heuristic.
         let rule_category_map: Option<HashMap<String, String>> = if findings_grammar.is_some() {
-            let mut map: HashMap<String, String> = HashMap::new();
-            for model_name in &plan.model_order {
-                if let Ok(cfg) = self.get_model_config(model_name) {
-                    let rag_dir = PathBuf::from(&cfg.path).join("rag");
-                    for (rule_id, cat) in crate::rag_bridge::build_rule_category_map(&rag_dir) {
-                        map.insert(rule_id, cat);
-                    }
-                }
-            }
-            Some(map)
+            let model_paths: Vec<String> = plan.model_order
+                .iter()
+                .filter_map(|name| self.get_model_config(name).ok())
+                .map(|cfg| cfg.path)
+                .collect();
+            Some(findings_rule_category_map(&model_paths))
         } else {
             None
         };
@@ -689,31 +682,16 @@ impl Orchestrator {
             .filter(|t| !t.trim().is_empty())
             .unwrap_or_else(|| {
                 // No fusion output — aggregate individual model chunk outputs.
-                let mut combined = String::new();
-                let mut sorted_models: Vec<_> = model_outputs.keys().collect();
-                sorted_models.sort();
-                for model_name in sorted_models {
-                    if let Some(paths) = model_outputs.get(model_name) {
-                        combined.push_str(&format!("═══ {} ═══\n\n", model_name));
-                        for (i, path) in paths.iter().enumerate() {
-                            if let Ok(text) = std::fs::read_to_string(path) {
-                                let cleaned = strip_llama_noise(&text);
-                                if !cleaned.trim().is_empty() {
-                                    let ch_title = chapters.get(i)
-                                        .map(|c| if c.title.is_empty() {
-                                            format!("Chapter {}", i + 1)
-                                        } else {
-                                            c.title.clone()
-                                        })
-                                        .unwrap_or_else(|| format!("Chapter {}", i + 1));
-                                    combined.push_str(&format!("── {} ──\n", ch_title));
-                                    combined.push_str(cleaned.trim());
-                                    combined.push_str("\n\n");
-                                }
-                            }
-                        }
-                    }
-                }
+                let titles: Vec<String> = chapters
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| if c.title.is_empty() {
+                        format!("Chapter {}", i + 1)
+                    } else {
+                        c.title.clone()
+                    })
+                    .collect();
+                let combined = combine_outputs_without_fusion(&chapter_outputs, &titles);
                 if combined.trim().is_empty() {
                     "Run complete. No inference output was produced.".to_string()
                 } else {
@@ -774,9 +752,57 @@ impl Orchestrator {
     }
 }
 
-/// True if Phase 2 structured-findings mode is requested via
-/// `ASG_STRUCTURED_FINDINGS=1` (or `true`). Off by default — the prose pipeline
-/// is unchanged unless explicitly opted in AND the llama build supports grammars.
+/// Every model's inference outputs in order, each with the index of the
+/// chapter it analysed. With a multi-pass RAG plan one chapter has several
+/// consecutive outputs, so an output's position is NOT its chapter.
+type ChapterOutputs = HashMap<String, Vec<(usize, PathBuf)>>;
+
+/// Every output read back for the findings merge, labelled with its model and
+/// the chapter it analysed. Passes over the same chapter share a label.
+fn findings_merge_inputs(outputs: &ChapterOutputs) -> Vec<(String, String)> {
+    let mut names: Vec<&String> = outputs.keys().collect();
+    names.sort();
+    let mut chapters = Vec::new();
+    for name in names {
+        for (ch, path) in &outputs[name] {
+            let text = std::fs::read_to_string(path).unwrap_or_default();
+            chapters.push((format!("{} · chapter {}", name, ch + 1), text));
+        }
+    }
+    chapters
+}
+
+/// The report body when there is no fusion output: each model's outputs in
+/// order under the heading of the chapter they analysed. `titles[i]` is the
+/// heading for chapter `i`; consecutive passes over one chapter share it.
+fn combine_outputs_without_fusion(outputs: &ChapterOutputs, titles: &[String]) -> String {
+    let mut combined = String::new();
+    let mut names: Vec<&String> = outputs.keys().collect();
+    names.sort();
+    for name in names {
+        combined.push_str(&format!("═══ {} ═══\n\n", name));
+        let mut heading: Option<usize> = None;
+        for (ch, path) in &outputs[name] {
+            let Ok(text) = std::fs::read_to_string(path) else { continue };
+            let cleaned = strip_llama_noise(&text);
+            if cleaned.trim().is_empty() {
+                continue;
+            }
+            if heading != Some(*ch) {
+                let title = titles
+                    .get(*ch)
+                    .cloned()
+                    .unwrap_or_else(|| format!("Chapter {}", ch + 1));
+                combined.push_str(&format!("── {} ──\n", title));
+                heading = Some(*ch);
+            }
+            combined.push_str(cleaned.trim());
+            combined.push_str("\n\n");
+        }
+    }
+    combined
+}
+
 /// Build the per-chapter prompt: RAG system prompt, a mode-appropriate
 /// instruction, then the chapter text. Extracted so the instruction-gating
 /// bug (prose mode shipped with NO instruction at all — see
@@ -796,6 +822,25 @@ fn build_chapter_prompt(system_prompt: &str, chapter_text: &str, structured_find
         format!("{}\n\n{}\n{}", system_prompt, PROSE_ANALYSIS_INSTRUCTION, chapter_text)
     }
 }
+
+/// rule_id → category across every model in the run, built from the same
+/// packets each model's prompt was built from: the shared defaults plus the
+/// `rag/` folder beside its .gguf. `ModelConfig::path` names the .gguf file,
+/// so it must go through `model_rag_dir` — joining `rag` onto it directly
+/// gives `…/model.gguf/rag`, and every per-model rule then scores as nothing.
+fn findings_rule_category_map(model_paths: &[String]) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    for path in model_paths {
+        for (rule_id, cat) in crate::rag_bridge::build_rule_category_map(&model_rag_dir(path)) {
+            map.insert(rule_id, cat);
+        }
+    }
+    map
+}
+
+/// True if Phase 2 structured-findings mode is requested via
+/// `ASG_STRUCTURED_FINDINGS=1` (or `true`). Off by default — the prose pipeline
+/// is unchanged unless explicitly opted in AND the llama build supports grammars.
 fn findings_mode_enabled() -> bool {
     std::env::var("ASG_STRUCTURED_FINDINGS")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -921,5 +966,116 @@ mod chapter_prompt_tests {
         let instruction_pos = prompt.find(crate::findings::FINDINGS_INSTRUCTION).unwrap();
         assert!(chapter_pos < instruction_pos);
         assert!(!prompt.contains(PROSE_ANALYSIS_INSTRUCTION), "structured mode must not mix in the prose instruction");
+    }
+}
+
+#[cfg(test)]
+mod findings_category_map_tests {
+    use super::*;
+
+    /// A packet that exists only in one model's own `rag/` folder.
+    const PER_MODEL_PACKET: &str = r#"{
+        "packet_id": 900, "category": "per_model_only", "description": "t", "version": "1.0",
+        "rules": [{"rule_id": "PMO-01", "name": "t", "pattern_type": "linguistic",
+                   "patterns": ["x"], "severity": "low", "explanation": "t"}],
+        "hit_conditions": {"min_pattern_matches": 1, "confidence_weight": 1.0},
+        "model_behavior": {"inject_as": "system_prompt", "priority": 9}
+    }"#;
+
+    /// `ModelConfig::path` names the .gguf file. Findings mode built the map
+    /// from `<path>/rag` (`…/model.gguf/rag`), so a model's own packet rules
+    /// were never mapped and scored as nothing, while its prompt did use them.
+    #[test]
+    fn per_model_packet_rules_reach_the_category_map() {
+        let root = std::env::temp_dir().join(format!("asg_rulecat_{}", std::process::id()));
+        let rag = root.join("rag");
+        std::fs::create_dir_all(&rag).unwrap();
+        let gguf = root.join("model.gguf");
+        std::fs::write(&gguf, b"").unwrap();
+        std::fs::write(rag.join("900_per_model.json"), PER_MODEL_PACKET).unwrap();
+
+        // Control: the fixture itself loads, so a miss below is the path.
+        let direct = crate::rag_bridge::build_rule_category_map(&rag);
+        let map = findings_rule_category_map(&[gguf.to_string_lossy().into_owned()]);
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert_eq!(direct.get("PMO-01").map(String::as_str), Some("per_model_only"));
+        assert_eq!(
+            map.get("PMO-01").map(String::as_str),
+            Some("per_model_only"),
+            "rules from the rag/ folder beside the .gguf must be mapped"
+        );
+    }
+}
+
+#[cfg(test)]
+mod multi_pass_label_tests {
+    use super::*;
+
+    /// One model's outputs as written by a run: `(chapter, text)` in order.
+    fn write_outputs(tag: &str, outputs: &[(usize, &str)]) -> (PathBuf, ChapterOutputs) {
+        let dir = std::env::temp_dir().join(format!("asg_labels_{}_{}", tag, std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let list = outputs
+            .iter()
+            .enumerate()
+            .map(|(i, (ch, text))| {
+                let p = dir.join(format!("out_{i}.txt"));
+                std::fs::write(&p, text).unwrap();
+                (*ch, p)
+            })
+            .collect();
+        let mut map = ChapterOutputs::new();
+        map.insert("model1".to_string(), list);
+        (dir, map)
+    }
+
+    /// Two chapters, two RAG passes each: four outputs.
+    const TWO_BY_TWO: [(usize, &str); 4] =
+        [(0, "ch1 pass1"), (0, "ch1 pass2"), (1, "ch2 pass1"), (1, "ch2 pass2")];
+
+    /// With several RAG passes, outputs were labelled by their position, so
+    /// the second pass over chapter 1 was reported as "chapter 2".
+    #[test]
+    fn findings_labels_name_the_chapter_not_the_output_position() {
+        let (dir, outputs) = write_outputs("findings", &TWO_BY_TWO);
+        let labels: Vec<String> = findings_merge_inputs(&outputs).into_iter().map(|(l, _)| l).collect();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            labels,
+            ["model1 · chapter 1", "model1 · chapter 1", "model1 · chapter 2", "model1 · chapter 2"]
+        );
+    }
+
+    /// The no-fusion report took each heading from the output's position:
+    /// chapter 1's second pass appeared under chapter 2's title, and passes
+    /// past the last chapter got invented "Chapter 3", "Chapter 4" headings.
+    #[test]
+    fn report_without_fusion_heads_each_chapter_once_in_order() {
+        let (dir, outputs) = write_outputs("report", &TWO_BY_TWO);
+        let titles = ["Intro".to_string(), "Chapter 2".to_string()];
+        let body = combine_outputs_without_fusion(&outputs, &titles);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(body.matches("── Intro ──").count(), 1, "{body}");
+        assert_eq!(body.matches("── Chapter 2 ──").count(), 1, "{body}");
+        assert!(!body.contains("Chapter 3") && !body.contains("Chapter 4"), "{body}");
+        let at = |s: &str| body.find(s).unwrap_or_else(|| panic!("missing {s:?} in {body}"));
+        assert!(at("── Intro ──") < at("ch1 pass1"));
+        assert!(at("ch1 pass2") < at("── Chapter 2 ──"));
+        assert!(at("── Chapter 2 ──") < at("ch2 pass1"));
+        assert!(at("ch2 pass1") < at("ch2 pass2"));
+    }
+
+    /// Control: a single-pass run keeps one heading per chapter, as before.
+    #[test]
+    fn single_pass_report_keeps_one_heading_per_chapter() {
+        let (dir, outputs) = write_outputs("single", &[(0, "first"), (1, "second")]);
+        let titles = ["Intro".to_string(), "Chapter 2".to_string()];
+        let body = combine_outputs_without_fusion(&outputs, &titles);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(body.find("── Intro ──").unwrap() < body.find("first").unwrap());
+        assert!(body.find("first").unwrap() < body.find("── Chapter 2 ──").unwrap());
+        assert!(body.find("── Chapter 2 ──").unwrap() < body.find("second").unwrap());
     }
 }

@@ -46,18 +46,24 @@ pub fn is_requested() -> bool {
     flag().load(Ordering::SeqCst)
 }
 
+/// Serializes every test in this crate that touches the flag. CANCEL_FLAG is
+/// genuine process-wide global state (that's the whole point), so tests in
+/// different modules race unless they all hold this — a lock private to one
+/// test module left `types::regression_tests` free to flip the flag mid-test.
+/// Poison-tolerant, so one failing test cannot fail the others.
+#[cfg(test)]
+pub(crate) fn test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // CANCEL_FLAG is genuine process-wide global state (that's the whole
-    // point), so tests that touch it must not run concurrently with each
-    // other or they'll race. Serialize with a test-local mutex.
-    static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     #[test]
     fn request_and_clear_round_trip() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = test_lock();
         clear();
         assert!(!is_requested());
         request();
@@ -70,7 +76,7 @@ mod tests {
     /// handle is visible through another.
     #[test]
     fn value_set_through_one_handle_is_visible_through_another() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = test_lock();
         clear();
         let handle_a = flag();
         let handle_b = flag();

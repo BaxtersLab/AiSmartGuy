@@ -2,6 +2,113 @@
 
 _Append-only (Article VIII). Newest entry at the top._
 
+## [2026-09-27] — Owner review: the stacked tree committed, six review defects fixed, 23 tests added
+
+The tree had sat uncommitted since `b18c755` (2026-07-17): 26 modified and 28
+new paths from seven batches (Phase 2 on the Windows box 07-30, the Linux
+port 08-03, library/cancel 08-04, rag_plan 08-05, test-box fixes 08-17, the
+prose-fix port 08-18, packaging 09-24/25). The shipped 0.1.0 .deb was built
+from it. **This file has no entries for 08-17/18**: that work is recorded in
+`~/Desktop/file cabinet/MAIN_HANDOFF.md` (the "REAL BOOK COMPLETED" row and
+"2026-08-18 — AiSmartGuy reconciled") and in
+`EVIDENCE-ADDENDUM-2026-08-17-post-drive-removal.md`.
+
+**Done:**
+- **Commit (i) `5406a37`** — the as-found tree, byte for byte, minus hygiene
+  items (42 paths). `target/release` was built after every source mtime, so it
+  is consistent with the shipped 0.1.0 (sha256 `38675bc6…`); not proven.
+- **Quarantined (moved, not deleted)** to
+  `~/workspace-quarantine/aismartguy-owner-review-2026-09-27/` (README +
+  SHA256SUMS, 11/11 verified after the move): `_pre-merge-backup-2026-08-18/`,
+  `orchestrator.rs.pre-prose-fix-2026-08-18.bak`, `dist/*.deb`,
+  `src-tauri/icons/.rgb_originals/`. `.gitignore` gains rules so they stay out;
+  `schema-shim/gschemas.compiled` stays in place, ignored (run.sh needs it).
+- **Commit (ii) — review fixes, each with a test proven red by mutation:**
+  - (a) **Crash at the last step of a run.** `pdf_writer::wrap_line` hard-broke
+    long words at a byte index; a multi-byte character across byte 90 panicked
+    inside `write_final_pdf`. Now cuts on a char boundary (width stays in bytes:
+    `escape_pdf_str` draws one glyph per byte).
+  - (b) **Phase 2 scoring lost per-model rules.** Findings mode built the
+    rule→category map from `<model.gguf>/rag` — the path bug `model_rag_dir`
+    fixed on 08-05. Now `findings_rule_category_map()` goes through it.
+  - (c) **Multi-pass runs mislabelled chapters.** Outputs were labelled by
+    position, so with N RAG passes chapter 1's second pass became "chapter 2"
+    (findings locations) and the no-fusion report invented "Chapter 3/4"
+    headings. Outputs now carry their chapter (`ChapterOutputs`);
+    `findings_merge_inputs()` and `combine_outputs_without_fusion()` use it.
+  - (d) **Flaky gate.** `types::regression_tests` flipped the global cancel flag
+    outside `cancel.rs`'s private test lock. Measured: 24 failures in 7000
+    as-found runs. The lock is now crate-wide (`cancel::test_lock()`,
+    poison-tolerant) and the test clears the flag: 0 in 7000.
+  - (e) **Vacuous watchdog tests.** With the 08-17 fix reverted, all 4 as-found
+    tests still passed. The deadline choice is now `zero_byte_deadline()`,
+    called by `enforce_timeout` and by the tests.
+  - (f) **Untested changes given tests:** main.rs logic moved into plain
+    functions (`saved_library_dir`, `parse_library_input`,
+    `list_library_subfolders`, `llama_asset_pattern`/`find_llama_asset`/
+    `choose_llama_asset`, `extract_llama_tar_gz`) with 8 tests on real temp
+    files, including a hostile `../` tar entry; `llama_detect` KV math and the
+    grammar probe (6 tests on a minimal GGUF fixture); the pre-spawn cancel
+    refusal in `run_inference`; findings-mode scoring in
+    `run_optimization_pass`.
+  - Doc repairs: `max_context_for_vram`'s doc comment had two functions
+    inserted into its middle; `findings_mode_enabled`'s doc sat on
+    `build_chapter_prompt`; a comment cited a `.bak` that does not exist.
+
+**Remaining:**
+- **Phase 2 is not live-verified** (see Verification). AiSmartGuy sits out the
+  current train by ruling; a headless real-model run is a separate task,
+  preferably on the test box.
+- Non-ASCII text in the report PDF prints as mojibake: raw UTF-8 bytes drawn
+  with Helvetica (`pdf_writer.rs` `escape_pdf_str`). Pre-existing, not fixed.
+- An unreadable output file becomes "" and is silently dropped from the
+  findings merge (`orchestrator.rs` `findings_merge_inputs`). Pre-existing.
+- `write_final_pdf_versioned` exists "so the xref format is testable" but no
+  test calls it.
+- Carried over: `16384` hardcoded in several places; fusion.rs keeps its own
+  `CHARS_PER_TOKEN`/`FOLD_INSTR_OVERHEAD`; the fetcher downloads into the
+  default library while lanes list the effective one (08-04 open decision);
+  3 pre-existing unused-variable warnings (`process.rs:9`, main.rs `pdf`,
+  `bg_run_id`).
+- MAIN_HANDOFF's "`C:/m/gemma-4.gguf` hardcoded in the Rust sources" does not
+  apply here: no tracked .rs/.toml/.html/.json file contains `gemma`.
+
+**Decisions:** (supervisor/operator rulings, 2026-09-27)
+- Two commits: the as-found tree, then the fixes — so the audit has a commit
+  for what 0.1.0 was built from.
+- LICENSE (MIT, identical to the estate's other trees) and the 09-25 packaging
+  committed as found. No version bump; no .deb built.
+- No real-model run on this box now.
+- Red/green by **mutation**, not by running new tests on HEAD: most new tests
+  call functions that do not exist at HEAD, which would only fail to compile.
+  Each fix was reverted to its old logic, one at a time, in a disposable copy.
+
+**Open Stubs:** None introduced.
+
+**Verification:**
+- Working tree: `cargo build --workspace --locked` exit 0 (3 pre-existing
+  warnings); `cargo test --workspace --locked` **231 passed, 0 failed,
+  0 ignored**; `-- --list` **231** (208 as found + 23 new). Cargo.lock unchanged.
+- Commit (i) from a fresh clone: build exit 0; **208 passed, 0 failed,
+  0 ignored**; `--list` 208, names identical to the as-found tree.
+- Mutation proofs (18): each reverted fix failed exactly its tests — (a) 2,
+  (b) 1, (c) 1+1, (e) 1, KV/grammar 3+1+1+1, pre-spawn cancel 1, findings
+  scoring 1, main.rs 7 (library ×3, installer ×2, file manager, VRAM
+  profile); controls stayed green.
+- Race: as-found 6/2000 + 18/5000 failures; fixed 0/2000 + 0/5000.
+- Windows target (`x86_64-pc-windows-gnu`, offline): `model_loader` and
+  `pdf_io` with tests check clean; `orchestrator` and the app cannot be
+  checked here (`ring` needs a C cross-toolchain).
+- Leak scan `--worktree-only`: 0 findings.
+- **UNVERIFIED:** the live Phase 2 path (`ASG_STRUCTURED_FINDINGS=1`, real
+  model, grammar-constrained output, `findings_table.md`/`findings.json`,
+  live parse-failure fallback); the merged prose pipeline end to end (the only
+  real book ran on a tree without rag_plan; no multi-pass run has ever
+  executed); GUI behaviour on this tree (Terminate Run, Open Output, library
+  browse/paste, close button under `GDK_BACKEND=x11`, window centring,
+  context-label recompute, all frontend JS); `run.sh`; the installer's live
+  GitHub download; the Windows build of `orchestrator` and the app.
+
 ## [2026-08-05] — The ✕ button: measured, not guessed. **The 2026-08-04 fix was wrong AND inert — do not port it.**
 
 ⚠️ **Windows fork: the previous entry told you to port everything. The `startup_scan`
