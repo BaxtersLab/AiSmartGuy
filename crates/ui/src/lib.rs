@@ -6,6 +6,7 @@ pub mod bridge_rag;
 pub mod commands;
 pub mod errors;
 pub mod events;
+pub mod lanes;
 pub mod state;
 pub mod types;
 

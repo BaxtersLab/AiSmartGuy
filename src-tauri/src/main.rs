@@ -8,12 +8,7 @@ use std::io::Read;
 use tauri::{AppHandle, Emitter, Manager, State};
 use serde::Serialize;
 
-use manifest::{
-    Manifest, ModelConfig, ModelSet, OptimizationState,
-    RagPacketMap, ResourceThrottle, RunMode, SourcePdf,
-};
 use model_loader::gpu_mapper;
-use rag_engine::hitlist;
 use ui::state::{new_shared_state, SharedUiState};
 use ui::types::UiConflict;
 
@@ -904,7 +899,7 @@ struct CtxVramProfile {
 fn cmd_ctx_vram_profile(model_dirs: Vec<String>) -> Option<CtxVramProfile> {
     let mut worst: Option<CtxVramProfile> = None;
     for dir in model_dirs.iter().filter(|d| !d.trim().is_empty()) {
-        let Ok(path) = first_gguf_in(dir) else { continue };
+        let Ok(path) = ui::lanes::first_gguf_in(dir) else { continue };
         let Some(kv) = model_loader::kv_bytes_per_token(&path) else { continue };
         let native = model_loader::gguf_context_length(&path).unwrap_or(0);
         let name = path
@@ -929,47 +924,6 @@ fn cmd_ctx_vram_profile(model_dirs: Vec<String>) -> Option<CtxVramProfile> {
 // ── Begin Run — build manifest from lane selections and run pipeline ─────────
 
 /// Resolve the first `.gguf` file inside `folder`. Returns the full path.
-fn first_gguf_in(folder: &str) -> Result<PathBuf, String> {
-    let dir = PathBuf::from(folder);
-    if !dir.is_dir() {
-        return Err(format!("not a directory: {}", folder));
-    }
-    let mut entries: Vec<_> = std::fs::read_dir(&dir)
-        .map_err(|e| e.to_string())?
-        .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.path()
-                .extension()
-                .map(|x| x.eq_ignore_ascii_case("gguf"))
-                .unwrap_or(false)
-        })
-        .collect();
-    entries.sort_by_key(|e| e.file_name());
-    entries
-        .first()
-        .map(|e| e.path())
-        .ok_or_else(|| format!("no .gguf file found in {}", folder))
-}
-
-fn model_config_from_lane(folder: &str, ctx: u32) -> Result<ModelConfig, String> {
-    let gguf_path = first_gguf_in(folder)?;
-    let name = gguf_path
-        .file_stem()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .into_owned();
-    Ok(ModelConfig {
-        name,
-        path: gguf_path.to_string_lossy().into_owned(),
-        quantization: String::new(),
-        context_length: Some(ctx),
-        gpu_usage: Some("CPU".to_string()),
-        n_gpu_layers: None,
-        active: true,
-        revision: None,
-        sha256: None,
-    })
-}
 
 /// List .part files in the models directory (incomplete downloads available for resume).
 #[tauri::command]
@@ -1109,79 +1063,20 @@ fn cmd_begin_run(
     }).ok();
 
     // ── 2. Map gating mode → RunMode + active model configs ──────
-    let run_mode = match mode.as_str() {
-        "1" => RunMode::Single,
-        "2" => RunMode::Dual,
-        _   => RunMode::Full,
-    };
-
-    let ctx = ctx_size.unwrap_or(16384);
-    let throttle = throttle_pct.unwrap_or(75).clamp(25, 100);
-
-    let mut model1 = Some(model_config_from_lane(&lane2, ctx)?);
-    if let Some(ref mut m) = model1 { m.gpu_usage = Some("GPU".to_string()); }
-
-    let mut model2 = if mode == "3" || mode == "full" {
-        Some(model_config_from_lane(&lane3, ctx)?)
-    } else {
-        None
-    };
-    if let Some(ref mut m) = model2 { m.gpu_usage = Some("GPU".to_string()); }
-
-    let mut model3 = if mode == "full" {
-        Some(model_config_from_lane(&lane4, ctx)?)
-    } else {
-        None
-    };
-    if let Some(ref mut m) = model3 { m.gpu_usage = Some("GPU".to_string()); }
-
-    let mut fusion = if mode != "1" {
-        Some(model_config_from_lane(&lane5, ctx)?)
-    } else {
-        None
-    };
-    if let Some(ref mut m) = fusion { m.gpu_usage = Some("GPU".to_string()); }
-
-    // ── 3. Assemble manifest ─────────────────────────────────────
-    let run_id = {
-        let d = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default();
-        let secs = d.as_secs();
-        let s = secs % 60;
-        let m = (secs / 60) % 60;
-        let h = (secs / 3600) % 24;
-        let (y, mo, day) = epoch_days_to_ymd((secs / 86400) as i64);
-        format!("Run_{:04}-{:02}-{:02}_{:02}-{:02}-{:02}", y, mo, day, h, m, s)
-    };
-    let timestamp = chrono_timestamp();
-    let source_pdf = SourcePdf {
-        filename: pdf_path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned(),
-        hash_sha256: None,
-        page_count: None,
-    };
-
-    let manifest = Manifest {
-        manifest_version: "1.0".into(),
-        engine_version: env!("CARGO_PKG_VERSION").into(),
-        run_id: run_id.clone(),
+    let run_id = ui::lanes::new_run_id();
+    let timestamp = ui::lanes::run_timestamp();
+    // The same builder the headless harness uses (ui::lanes).
+    let manifest = ui::lanes::build_run_manifest(
+        &mode,
+        [&lane2, &lane3, &lane4, &lane5],
+        ctx_size,
+        throttle_pct,
+        &pdf_path,
+        run_id.clone(),
         timestamp,
-        source_pdf,
-        mode: run_mode,
-        models: ModelSet { model1, model2, model3, fusion },
-        rag_packets_used: RagPacketMap::new(),
-        categories_active: hitlist::active_slugs(),
-        optimization_state: OptimizationState::default(),
-        resource_throttle: ResourceThrottle { throttle_pct: throttle },
-        partial_run: None,
-        notes: None,
-    };
+        env!("CARGO_PKG_VERSION"),
+    )?;
 
-    // ── 4. Write manifest + create run dir ───────────────────────
     let run_dir = output_dir(&app)?
         .join(&run_id);
     std::fs::create_dir_all(&run_dir).map_err(|e| e.to_string())?;
@@ -1322,34 +1217,7 @@ fn cmd_begin_run(
 }
 
 /// Simple timestamp without pulling in the chrono crate.
-fn chrono_timestamp() -> String {
-    let d = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = d.as_secs();
-    // Approximate UTC: not locale-aware, but sufficient for run IDs.
-    let s = secs % 60;
-    let m = (secs / 60) % 60;
-    let h = (secs / 3600) % 24;
-    let days = secs / 86400;
-    // Good-enough year/month/day from epoch days.
-    let (y, mo, day) = epoch_days_to_ymd(days as i64);
-    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", y, mo, day, h, m, s)
-}
 
-fn epoch_days_to_ymd(mut days: i64) -> (i64, i64, i64) {
-    days += 719_468;
-    let era = if days >= 0 { days } else { days - 146_096 } / 146_097;
-    let doe = days - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-    (y, m, d)
-}
 
 // ── main ─────────────────────────────────────────────────────────────────────
 
