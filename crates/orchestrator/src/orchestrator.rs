@@ -29,14 +29,13 @@ const CHAPTER_OVERLAP: usize = 200;
 /// findings mode is opt-in via ASG_STRUCTURED_FINDINGS=1). Without this, the
 /// prompt sent to `llama-completion` was just [RAG rule catalog] + [raw
 /// chapter text] with nothing telling the model what to do with either one.
-/// `llama-completion` runs with `-no-cnv` (no chat template, pure raw
-/// completion) and Hermes' own instruction-following only engages through
-/// its chat template — so with no directive and no template, the model has
-/// no signal to stop predicting "what comes next in this document" and
-/// start producing analysis. Confirmed empirically against a real run: the
-/// model output was a verbatim-style continuation of the source essay's own
-/// prose, not analysis of it. Mirrors FINDINGS_INSTRUCTION's role for the
-/// structured-findings path, but for free-form prose output.
+/// The directive alone was not enough: while `llama-completion` ran with
+/// `-no-cnv` (raw completion, no chat template) the model still continued
+/// the source essay on every pass of a real run (2026-09-27). The prompt now
+/// goes in as one chat turn (`-cnv -st`, see model_loader's command
+/// builder), which is where an instruct model's instruction-following
+/// engages. Mirrors FINDINGS_INSTRUCTION's role for the structured-findings
+/// path, but for free-form prose output.
 const PROSE_ANALYSIS_INSTRUCTION: &str = "\
 Using the rule catalog above, write a critical analysis of the passage below. \
 Identify specific instances of logical fallacies, loaded or manipulative \
@@ -899,6 +898,13 @@ pub(crate) fn strip_llama_noise(text: &str) -> String {
     let mut in_banner = true;
 
     for line in text.lines() {
+        // llama.cpp ends a finished answer with " [end of text]" on stdout.
+        // It is never part of the answer, and it reached every report once
+        // the model was asked in a chat turn and could finish (2026-09-27).
+        let line = match line.trim_end().strip_suffix("[end of text]") {
+            Some(rest) => rest.trim_end(),
+            None => line,
+        };
         let trimmed = line.trim();
 
         // Skip leading blank lines, ASCII banner, and interactive-mode header
@@ -945,6 +951,25 @@ pub(crate) fn strip_llama_noise(text: &str) -> String {
     }
 
     lines.join("\n")
+}
+
+#[cfg(test)]
+mod end_of_text_tests {
+    use super::*;
+
+    #[test]
+    fn the_end_of_text_marker_never_reaches_the_report() {
+        assert_eq!(strip_llama_noise("### Review\nThe last point. [end of text]\n"),
+                   "### Review\nThe last point.");
+        assert_eq!(strip_llama_noise("The answer.\n [end of text]\n"), "The answer.");
+    }
+
+    /// Control: the words themselves, inside the answer, are kept.
+    #[test]
+    fn the_phrase_inside_an_answer_is_kept() {
+        let text = "llama prints [end of text] when it stops, then exits.";
+        assert_eq!(strip_llama_noise(text), text);
+    }
 }
 
 // Ported from the test box 2026-08-17 alongside build_chapter_prompt().

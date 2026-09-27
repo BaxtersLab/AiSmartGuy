@@ -28,7 +28,14 @@ pub fn build_command(instance: &ModelInstance, request: &InferenceRequest) -> Co
         .arg("-f")
         .arg(&request.prompt_path)
         .arg("--no-display-prompt")
-        .arg("-no-cnv")
+        // One chat turn through the model's own chat template, then exit.
+        // Raw completion (-no-cnv) hands an instruct model a book that ends
+        // mid-passage, and it continues the book: on a real run (2026-09-27,
+        // Qwen2.5-1.5B-Instruct) every pass came back as more of the source
+        // essay, even with the instruction placed before the passage. The
+        // same prompt as one chat turn came back as analysis, twice in two.
+        .arg("-cnv")
+        .arg("-st")
         .arg("-n")
         .arg("2048");
 
@@ -75,6 +82,24 @@ mod tests {
         assert!(args.contains(&"4".to_string())); // default threads from ModelInstance::new
         // No grammar arg when grammar_file is None.
         assert!(!args.contains(&"--grammar-file".to_string()));
+    }
+
+    /// The prompt goes in as one chat turn, never as raw text to continue.
+    #[test]
+    fn the_prompt_is_one_chat_turn_not_raw_completion() {
+        let inst = make_instance();
+        let req = InferenceRequest {
+            chunk_id: 0,
+            prompt_path: PathBuf::from("/tmp/prompt.txt"),
+            output_path: PathBuf::from("/tmp/output.txt"),
+            log_path: PathBuf::from("/tmp/run.log"),
+            grammar_file: None,
+        };
+        let args: Vec<_> = build_command(&inst, &req).get_args()
+            .map(|a| a.to_string_lossy().into_owned()).collect();
+        assert!(args.iter().any(|a| a == "-cnv"), "{args:?}");
+        assert!(args.iter().any(|a| a == "-st"), "{args:?}");
+        assert!(!args.iter().any(|a| a == "-no-cnv"), "{args:?}");
     }
 
     #[test]
