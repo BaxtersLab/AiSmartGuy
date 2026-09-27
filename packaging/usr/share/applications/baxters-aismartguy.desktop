@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=AiSmartGuy
+GenericName=AI Assistant
+Comment=Local AI assistant with a structured findings pipeline
+Exec=/opt/baxters/aismartguy/run.sh
+TryExec=/opt/baxters/aismartguy/run.sh
+Path=/opt/baxters/aismartguy
+Icon=baxters-aismartguy
+Terminal=false
+Categories=Utility;
+Keywords=ai;assistant;agent;llm;
+StartupNotify=true
+StartupWMClass=aismartguy-app

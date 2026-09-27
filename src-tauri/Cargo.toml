@@ -10,6 +10,9 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["wry"] }
 serde      = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Native folder picker for "point at my model library". Uses the XDG portal on
+# Linux, so it works under Wayland without an X11 fallback.
+rfd        = "0.14"
 tokio      = { version = "1", features = ["time", "sync"] }
 ureq       = { version = "2" }
 zip        = { version = "2", default-features = false, features = ["deflate"] }
@@ -19,3 +22,9 @@ orchestrator  = { path = "../crates/orchestrator" }
 pdf_io        = { path = "../crates/pdf_io" }
 rag_engine    = { path = "../crates/rag_engine" }
 ui            = { path = "../crates/ui" }
+
+# llama.cpp ships .zip on Windows and .tar.gz on Linux, so each platform pulls
+# only the archive reader it actually uses.
+[target.'cfg(not(target_os = "windows"))'.dependencies]
+flate2 = "1"
+tar = "0.4"

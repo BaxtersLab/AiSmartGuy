@@ -7,10 +7,12 @@ pub mod run_modes;
 pub mod sequence_plan;
 pub mod manifest_bridge;
 pub mod rag_bridge;
+pub mod rag_plan;
 pub mod pdf_bridge;
 pub mod state_bridge;
 pub mod bridge_model_fetcher;
 pub mod fusion;
+pub mod findings;
 pub mod optimization_bridge;
 pub mod orchestrator;
 

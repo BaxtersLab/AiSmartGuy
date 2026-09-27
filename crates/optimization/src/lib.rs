@@ -11,7 +11,7 @@ pub mod state;
 
 pub use errors::{OptimizationError, OptimizationResult};
 pub use types::{BookScore, CategoryWinner, ModelCategoryScore, ScoreHistory, WinCounts};
-pub use scoring::compute_scores;
+pub use scoring::{compute_scores, compute_scores_from_counts};
 pub use penalties::apply_penalties;
 pub use aggregator::{aggregate_scores, compute_win_counts};
 pub use consensus::determine_winner;

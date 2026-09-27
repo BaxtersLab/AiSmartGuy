@@ -60,10 +60,19 @@
             <span class="ml-lane-num">1</span>
             <span class="ml-lane-label">Model Library Folder</span>
           </div>
-          <div class="ml-lane-body">
-            <input type="text" class="ml-path-input" id="mlLibraryPath" readonly
-                   placeholder="Loading…">
+          <div class="ml-lane-body" style="display:flex;gap:6px;align-items:center;">
+            <input type="text" class="ml-path-input" id="mlLibraryPath"
+                   placeholder="paste a folder path, or use Browse…"
+                   title="Type or paste a path and press Enter"
+                   style="flex:1;min-width:0;">
+            <button type="button" id="mlBrowseBtn"
+                    style="white-space:nowrap;">📁 Browse…</button>
+            <button type="button" id="mlResetBtn"
+                    title="Back to the app's own models folder"
+                    style="white-space:nowrap;">↺</button>
           </div>
+          <div id="mlLibraryNote"
+               style="font-size:11px;opacity:.75;margin-top:4px;"></div>
         </div>
 
         <!-- LANE 2: Model 1 — unbiased reasoning -->
@@ -142,6 +151,9 @@
           <div class="ml-gating-actions">
             <button class="ml-btn ml-btn-primary ml-btn-start" id="mlAdvancedBtn">Advanced Settings</button>
             <button class="ml-btn ml-btn-lock" id="mlLockBtn">Lock for 10 Runs</button>
+            <!-- Reachable BEFORE a run, not only from the post-run prompt:
+                 clearing out old reports is something you do on the way in. -->
+            <button class="ml-btn" id="mlOpenOutBtn">Open Output 📂</button>
           </div>
         </div>
 
@@ -272,6 +284,12 @@
           <p class="proc-terminal-line proc-terminal-dim">Waiting for inference…</p>
         </div>
         <button class="proc-back-btn" id="procBackBtn">&#9664; Back</button>
+        <!-- Stop a run without closing the app, which was previously the only
+             way out of a fold that was going to take hours. -->
+        <button class="proc-back-btn" id="procTerminateBtn"
+                style="right:16px;left:auto;background:#b03636;color:#fff;">
+          ■ Terminate Run
+        </button>
       </div>
 
       <!-- ERROR STATE -->
@@ -594,6 +612,7 @@
         modelLoaderScreen.classList.remove('hidden');
         waitingForNewPdf = false;
         loadLibraryPath();
+        wireLibraryButtons();
         populateLaneDropdowns();
         applyGatingMode();
         updateRunCounter();
@@ -690,11 +709,81 @@
       }
 
       // ── Lane & library helpers ─────────────────────────────────
+      // Show the effective library AND say whether it is the default or an
+      // override. Without that, the fetcher downloads into the DEFAULT folder
+      // while the lanes list the OVERRIDE — so a model can download fine and
+      // then be missing from the dropdowns with nothing on screen to explain it.
       function loadLibraryPath() {
         if (!window.__TAURI__ || !window.__TAURI__.core) return;
-        window.__TAURI__.core.invoke('cmd_get_model_library_path')
-          .then(function (p) { mlLibraryPath.value = p; })
-          .catch(function () {});
+        var note = document.getElementById('mlLibraryNote');
+        window.__TAURI__.core.invoke('cmd_model_library_info')
+          .then(function (info) {
+            mlLibraryPath.value = info.path;
+            if (!note) return;
+            note.textContent = info.is_override
+              ? 'Custom library in use. Fetched models still download to the default (' +
+                info.default_path + '), so move or re-point after fetching.'
+              : 'Default library. Browse or paste a path to point at your own.';
+          })
+          .catch(function () {
+            // Older builds only have the plain path command.
+            window.__TAURI__.core.invoke('cmd_get_model_library_path')
+              .then(function (p) { mlLibraryPath.value = p; })
+              .catch(function () {});
+          });
+      }
+
+      // Point the app at wherever the models actually live. They are several GB
+      // each and normally sit on another disk, so the alternative is copying
+      // them into the app's private data folder just to make them selectable.
+      function wireLibraryButtons() {
+        var browseBtn = document.getElementById('mlBrowseBtn');
+        var resetBtn  = document.getElementById('mlResetBtn');
+        if (!browseBtn || !window.__TAURI__ || !window.__TAURI__.core) return;
+
+        function applyPath(p) {
+          mlLibraryPath.value = p;
+          // Re-scan immediately: a new library with the old dropdown contents
+          // is a trap — the list would still show the previous folder's models.
+          loadLibraryPath();
+          populateLaneDropdowns();
+        }
+
+        // Typed or pasted path. Committed on Enter or on leaving the field, so
+        // pasting and clicking away does not silently discard it.
+        function commitTypedPath() {
+          var v = mlLibraryPath.value.trim();
+          window.__TAURI__.core.invoke('cmd_set_model_library', { path: v })
+            .then(applyPath)
+            .catch(function (e) {
+              var note = document.getElementById('mlLibraryNote');
+              if (note) note.textContent = String(e);
+              // Put the field back to what is actually in force, so the box
+              // never shows a path the app is not using.
+              loadLibraryPath();
+            });
+        }
+        mlLibraryPath.addEventListener('keydown', function (ev) {
+          if (ev.key === 'Enter') { ev.preventDefault(); commitTypedPath(); }
+        });
+        mlLibraryPath.addEventListener('blur', commitTypedPath);
+
+        browseBtn.addEventListener('click', function () {
+          window.__TAURI__.core.invoke('cmd_browse_model_library')
+            .then(applyPath)
+            .catch(function (e) {
+              // Dismissing the picker is not a failure worth reporting.
+              if (String(e) !== 'cancelled') console.error('browse failed:', e);
+            });
+        });
+
+        if (resetBtn) {
+          resetBtn.addEventListener('click', function () {
+            window.__TAURI__.core.invoke('cmd_reset_model_library')
+              .then(applyPath)
+              .catch(function (e) { console.error('reset failed:', e); });
+          });
+        }
       }
 
       function populateSelect(sel, subfolders) {
@@ -724,6 +813,7 @@
             populateSelect(mlSelect5, subs);
             restoreModelConfig(subs);
             updateStartBtn();
+            refreshCtxVramLabels();   // restored selections need real labels too
           })
           .catch(function (err) {
             console.error('list subfolders failed:', err);
@@ -875,6 +965,7 @@
           updateStartBtn();
           checkModelChange();
           saveModelConfig();
+          refreshCtxVramLabels();   // VRAM per context depends on the chosen models
         });
       });
 
@@ -1063,6 +1154,55 @@
         return checked ? parseInt(checked.value, 10) : 16384;
       }
 
+      // Replace the static VRAM estimates with figures computed from the
+      // selected models' own GGUF metadata. The shipped labels assumed roughly
+      // 128 KB/token, which is a big-model number; a 1B with grouped-query
+      // attention uses about 24 KB/token, so those labels ran ~5x high and
+      // talked the operator out of contexts the GPU could easily hold.
+      // Leaves the static text alone if metadata cannot be read.
+      function refreshCtxVramLabels() {
+        if (!window.__TAURI__ || !window.__TAURI__.core) return;
+        var dirs = [mlSelect2, mlSelect3, mlSelect4, mlSelect5]
+          .map(function (s) { return s && s.value ? s.value : ''; })
+          .filter(function (v) { return v; });
+        if (!dirs.length) return;
+
+        window.__TAURI__.core.invoke('cmd_ctx_vram_profile', { modelDirs: dirs })
+          .then(function (prof) {
+            if (!prof || !prof.kv_bytes_per_token) return;
+            document.querySelectorAll('input[name="ctxSize"]').forEach(function (radio) {
+              var detail = radio.parentElement.querySelector('.adv-ctx-detail');
+              if (!detail) return;
+              var ctx = parseInt(radio.value, 10);
+              var bytes = ctx * prof.kv_bytes_per_token;
+              var txt = bytes >= 1073741824
+                ? (bytes / 1073741824).toFixed(1) + ' GB'
+                : Math.round(bytes / 1048576) + ' MB';
+
+              // Beyond the model's trained context, more tokens buy nothing.
+              if (prof.native_ctx && ctx > prof.native_ctx) {
+                detail.textContent = txt + ' — exceeds model max ('
+                                   + (prof.native_ctx / 1024) + 'K)';
+                radio.disabled = true;
+                if (radio.checked) {
+                  radio.checked = false;
+                  var fallback = document.querySelector(
+                    'input[name="ctxSize"][value="16384"]');
+                  if (fallback && !fallback.disabled) fallback.checked = true;
+                }
+              } else {
+                radio.disabled = (ctx <= 4096);   // 4K stays off: too small with RAG
+                detail.textContent = txt + ' KV'
+                  + (ctx === 16384 ? ' — recommended' : '');
+              }
+            });
+            console.log('[ctx-vram] ' + prof.model_name + ': '
+              + prof.kv_bytes_per_token + ' B/token, native ctx '
+              + prof.native_ctx);
+          })
+          .catch(function (err) { console.warn('ctx vram profile failed:', err); });
+      }
+
       // ── Model Loader buttons ───────────────────────────────────
       mlFetchHfBtn.addEventListener('click', function () {
         showHfDownload();
@@ -1073,6 +1213,18 @@
           window.__TAURI__.core.invoke('cmd_open_model_library').catch(function () {});
         }
       });
+
+      // Empty path = the app's own output root, so this lands on the folder
+      // holding every Run_* directory rather than one particular run.
+      var mlOpenOutBtn = document.getElementById('mlOpenOutBtn');
+      if (mlOpenOutBtn) {
+        mlOpenOutBtn.addEventListener('click', function () {
+          if (window.__TAURI__ && window.__TAURI__.core) {
+            window.__TAURI__.core.invoke('cmd_open_output_folder', { path: '' })
+              .catch(function (e) { console.error('open output failed:', e); });
+          }
+        });
+      }
 
       mlAdvancedBtn.addEventListener('click', function () {
         showAdvancedSettings();
@@ -1241,6 +1393,36 @@
       procBackBtn.addEventListener('click', function () {
         showModelLoader();
       });
+
+      // Terminate the run. This kills the llama child that is mid-inference and
+      // stops any later pass from starting; it does not roll back work already
+      // written, so partial output stays on disk rather than disappearing.
+      var procTerminateBtn = document.getElementById('procTerminateBtn');
+      if (procTerminateBtn) {
+        procTerminateBtn.addEventListener('click', function () {
+          if (!window.__TAURI__ || !window.__TAURI__.core) return;
+          procTerminateBtn.disabled = true;
+          procTerminateBtn.textContent = 'Terminating…';
+          window.__TAURI__.core.invoke('cmd_cancel_run')
+            .catch(function (e) { console.error('cancel failed:', e); })
+            .then(function () {
+              var t = document.getElementById('procTerminal');
+              if (t) {
+                var line = document.createElement('p');
+                line.className = 'proc-terminal-line';
+                line.textContent = '■ Terminate requested — stopping after the current step.';
+                t.appendChild(line);
+                t.scrollTop = t.scrollHeight;
+              }
+              // Re-arm rather than leaving it dead: a fold can sit in a long
+              // step, and a button stuck on "Terminating…" reads as a hang.
+              setTimeout(function () {
+                procTerminateBtn.disabled = false;
+                procTerminateBtn.textContent = '■ Terminate Run';
+              }, 4000);
+            });
+        });
+      }
 
       procBackModelBtn.addEventListener('click', function () {
         setRunActive(false);

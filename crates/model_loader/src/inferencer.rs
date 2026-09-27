@@ -27,6 +27,16 @@ pub fn run_inference(
         )));
     }
 
+    // Bail BEFORE spawning if cancellation was already requested. Without
+    // this, cancel only stops the chapter currently in flight (caught later
+    // by enforce_timeout's poll loop) and the next chapter starts running
+    // immediately after — which looks, from the operator's chair, exactly
+    // like Terminate Run was ignored.
+    if instance.cancel.load(std::sync::atomic::Ordering::SeqCst) {
+        eprintln!("[model_loader][INFO] run_inference: cancellation already requested — not spawning chunk_id={}", request.chunk_id);
+        return Err(ModelError::Cancelled("inference cancelled by caller".to_string()));
+    }
+
     transition(instance, ModelState::Inferencing)?;
 
     let info = format!("chunk_id={} gpu_layers={} ctx={} prompt={} output={}",

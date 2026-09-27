@@ -159,6 +159,7 @@ fn run_fold(
                 prompt_path,
                 output_path: output_path.clone(),
                 log_path,
+                grammar_file: None, // fold synthesizes prose, never grammar-constrained
             };
             infer_counter += 1;
 

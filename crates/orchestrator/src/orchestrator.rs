@@ -11,19 +11,12 @@ use crate::manifest_bridge::{load_manifest, save_manifest, validate_manifest};
 use crate::optimization_bridge::run_optimization_pass;
 use crate::pdf_bridge::{chapter_split, extract_pdf, write_final_pdf};
 use crate::progress::emit_progress;
-use crate::rag_bridge::build_system_prompt;
+use crate::rag_bridge::{load_merged_packets, model_rag_dir};
+use crate::rag_plan::{plan_rag_for_context, RagPlan, CHARS_PER_TOKEN};
 use crate::sequence_plan::build_sequence;
 use crate::state_bridge;
 use crate::types::{FusionInput, ModelOutputs, OrchestratorProgressEvent, OrchestratorState};
 
-/// Fallback RAG system prompt overhead (tokens) — used ONLY if the packets
-/// cannot be rendered for measurement. The real overhead is MEASURED from the
-/// rendered packets before chapter-splitting (a hardcoded guess here was the
-/// root of the context-ceiling failure: on VRAM-capped hardware the budget
-/// subtraction went negative, the MIN floor masked it, and every prompt then
-/// overflowed the loaded context — llama.cpp truncated the FRONT, which holds
-/// the RAG instructions, and the model "lost its mind").
-const RAG_OVERHEAD_FALLBACK: usize = 6800;
 /// Generation output headroom (tokens).
 const GEN_HEADROOM: usize = 2048;
 /// Percentage of context reserved as safety margin for token-estimation error.
@@ -31,10 +24,44 @@ const GEN_HEADROOM: usize = 2048;
 const SAFETY_PCT: usize = 10;
 /// Overlap between consecutive chapters (tokens).
 const CHAPTER_OVERLAP: usize = 200;
+
+/// Per-chapter analysis instruction for prose mode (the default — structured
+/// findings mode is opt-in via ASG_STRUCTURED_FINDINGS=1). Without this, the
+/// prompt sent to `llama-completion` was just [RAG rule catalog] + [raw
+/// chapter text] with nothing telling the model what to do with either one.
+/// `llama-completion` runs with `-no-cnv` (no chat template, pure raw
+/// completion) and Hermes' own instruction-following only engages through
+/// its chat template — so with no directive and no template, the model has
+/// no signal to stop predicting "what comes next in this document" and
+/// start producing analysis. Confirmed empirically against a real run: the
+/// model output was a verbatim-style continuation of the source essay's own
+/// prose, not analysis of it. Mirrors FINDINGS_INSTRUCTION's role for the
+/// structured-findings path, but for free-form prose output.
+const PROSE_ANALYSIS_INSTRUCTION: &str = "\
+Using the rule catalog above, write a critical analysis of the passage below. \
+Identify specific instances of logical fallacies, loaded or manipulative \
+language, and rhetorical framing, quoting the exact text for each instance \
+and explaining which pattern it matches and why. Do not continue, \
+paraphrase, or summarize the passage itself — analyze it.\n\n\
+PASSAGE TO ANALYZE:";
 /// Absolute minimum chunk budget if context is very small.
 const MIN_CHAPTER_TOKENS: usize = 1024;
-/// Rough chars-per-token estimate (conservative: most tokenizers average 1.5–2.5).
-const CHARS_PER_TOKEN: usize = 2;
+
+/// What one model can actually do, worked out before any chapter is cut.
+///
+/// The RAG library no longer has to fit a single prompt — `rag` may spread it
+/// over several passes — so `capacity` is a workable number even for a model
+/// whose whole context is smaller than the library.
+struct ModelBudget {
+    /// Context this model will load: min(user setting, native limit, VRAM).
+    ctx: usize,
+    /// Which of those three bound it — for an honest error message.
+    limited_by: &'static str,
+    /// How this model's RAG packets get delivered.
+    rag: RagPlan,
+    /// Tokens left for chapter text after RAG, generation and safety.
+    capacity: usize,
+}
 
 /// The orchestrator — master control loop for a single AiSmartGuy run.
 pub struct Orchestrator {
@@ -97,122 +124,103 @@ impl Orchestrator {
             ));
         }
 
-        // ── Step 2c: Determine effective context ────────────────────────────
-        // user_ctx = what the user selected in the UI.
-        // model_ctx = smallest native context among all active models' GGUF files.
-        // effective = min(user_ctx, model_ctx) so we never exceed any model's limit.
+        // ── Step 2c: Per-model context and RAG delivery plan ────────────────
+        //
+        // Each model gets its OWN context — the smallest of what the user asked
+        // for, what the GGUF was trained on, and what VRAM can hold. The old
+        // code took the minimum across every model and applied it to all of
+        // them, so one 8K model in the lineup dragged a 262K model down to 8K
+        // for no reason.
+        //
+        // Each model also gets its own RAG plan. The library no longer has to
+        // fit in a single prompt: `plan_rag_for_context` spreads it over as
+        // many passes as the context needs, without dropping a rule. That is
+        // what turns a negative chapter budget into a workable one.
         let user_ctx = self.manifest.models.model1
             .as_ref()
             .and_then(|m| m.context_length)
             .unwrap_or(16384) as usize;
 
-        let mut model_native_ctx: Option<usize> = None;
+        let throttle = self.manifest.resource_throttle.throttle_pct.clamp(25, 100);
+        let raw_vram = model_loader::query_vram_mb();
+        let usable_vram = (raw_vram as u64 * throttle as u64 / 100) as u32;
+
+        let mut budgets: HashMap<String, ModelBudget> = HashMap::new();
         for model_name in &plan.model_order {
-            if let Ok(mc) = self.get_model_config(model_name) {
-                let path = std::path::Path::new(&mc.path);
-                if let Some(native) = model_loader::gguf_context_length(path) {
-                    let native = native as usize;
-                    eprintln!("[orchestrator] {} native context: {} tokens", model_name, native);
-                    model_native_ctx = Some(match model_native_ctx {
-                        Some(prev) => prev.min(native),
-                        None => native,
-                    });
+            let mc = match self.get_model_config(model_name) {
+                Ok(mc) => mc,
+                Err(e) => {
+                    eprintln!("[orchestrator][WARN] no config for {}: {}", model_name, e);
+                    continue;
+                }
+            };
+            let path = std::path::Path::new(&mc.path);
+
+            let mut ctx = user_ctx;
+            let mut limited_by = "the context setting";
+            if let Some(native) = model_loader::gguf_context_length(path) {
+                let native = native as usize;
+                eprintln!("[orchestrator] {} native context: {} tokens", model_name, native);
+                if native < ctx {
+                    ctx = native;
+                    limited_by = "the model's own trained context";
                 }
             }
+            if let Some(hw_max) = model_loader::max_context_for_vram(path, usable_vram) {
+                let hw_max = hw_max as usize;
+                if hw_max < ctx {
+                    ctx = hw_max;
+                    limited_by = "available VRAM";
+                }
+            }
+            let ctx = ctx.max(2048);
+
+            let safety = ctx * SAFETY_PCT / 100;
+            let usable = ctx.saturating_sub(GEN_HEADROOM).saturating_sub(safety);
+
+            let packets = load_merged_packets(&model_rag_dir(&mc.path));
+            let (rag, capacity) = plan_rag_for_context(&packets, usable, MIN_CHAPTER_TOKENS);
+
+            eprintln!(
+                "[orchestrator] {}: ctx={} (bound by {}), usable={} → RAG: {} → {}tok for chapter text",
+                model_name, ctx, limited_by, usable, rag.describe(), capacity
+            );
+
+            budgets.insert(
+                model_name.clone(),
+                ModelBudget { ctx, limited_by, rag, capacity },
+            );
         }
 
-        let effective_ctx = match model_native_ctx {
-            Some(native) => {
-                let eff = user_ctx.min(native);
-                if eff < user_ctx {
-                    eprintln!(
-                        "[orchestrator] capping context: user={} model_native={} → effective={}",
-                        user_ctx, native, eff
-                    );
-                }
-                eff
-            }
-            None => user_ctx, // couldn't read GGUF — trust user setting
-        };
+        // Chapters are cut once and read by every model, so the split has to
+        // suit the tightest of them.
+        let (tightest, chapter_budget) = budgets
+            .iter()
+            .map(|(name, b)| (name.clone(), b.capacity))
+            .min_by_key(|(_, capacity)| *capacity)
+            .unwrap_or_else(|| (String::new(), 0));
 
-        // ── VRAM-aware context cap ──────────────────────────────────────────
-        // Clamp context to what the hardware can actually support so chapters
-        // are split small enough to avoid OOM at inference time.
-        let throttle = self.manifest.resource_throttle.throttle_pct.clamp(25, 100);
-        let effective_ctx = {
-            let mut cap = effective_ctx;
-            for model_name in &plan.model_order {
-                if let Ok(mc) = self.get_model_config(model_name) {
-                    let path = std::path::Path::new(&mc.path);
-                    let raw_vram = model_loader::query_vram_mb();
-                    let usable_vram = (raw_vram as u64 * throttle as u64 / 100) as u32;
-                    if let Some(hw_max) = model_loader::max_context_for_vram(path, usable_vram) {
-                        let hw_max = hw_max as usize;
-                        if hw_max < cap {
-                            eprintln!(
-                                "[orchestrator] VRAM cap: {} can support max {}tok (was {})",
-                                model_name, hw_max, cap
-                            );
-                            cap = hw_max;
-                        }
-                    }
-                }
-            }
-            cap
-        };
+        if chapter_budget < MIN_CHAPTER_TOKENS {
+            let (ctx, limited_by, rag_tokens, passes) = budgets
+                .get(&tightest)
+                .map(|b| (b.ctx, b.limited_by, b.rag.max_batch_tokens(), b.rag.passes()))
+                .unwrap_or((0, "an unreadable model config", 0, 0));
 
-        // ── Measure the REAL RAG prompt size (not a guess) ──────────────────
-        // Render the merged packets exactly as the per-model loop will and take
-        // the largest across active models. This is the single source of truth
-        // the chapter budget subtracts.
-        let rag_overhead = {
-            let mut max_tokens: Option<usize> = None;
-            for model_name in &plan.model_order {
-                if let Ok(mc) = self.get_model_config(model_name) {
-                    let rag_dir = PathBuf::from(&mc.path).join("rag");
-                    if let Ok(sp) = build_system_prompt(&rag_dir) {
-                        let t = sp.len() / CHARS_PER_TOKEN;
-                        max_tokens = Some(max_tokens.map_or(t, |m: usize| m.max(t)));
-                    }
-                }
-            }
-            match max_tokens {
-                Some(t) => t,
-                None => {
-                    eprintln!(
-                        "[orchestrator][WARN] could not render RAG packets for measurement — \
-                         falling back to {} token estimate",
-                        RAG_OVERHEAD_FALLBACK
-                    );
-                    RAG_OVERHEAD_FALLBACK
-                }
-            }
-        };
-
-        let safety_margin = effective_ctx * SAFETY_PCT / 100;
-        let raw_budget = effective_ctx
-            .saturating_sub(rag_overhead)
-            .saturating_sub(GEN_HEADROOM)
-            .saturating_sub(safety_margin);
-
-        // The old code floored a NEGATIVE budget to MIN_CHAPTER_TOKENS and sent
-        // overflowing prompts anyway. Fail loudly with the actual numbers and
-        // what to do about it instead — an honest error beats a garbled review.
-        if raw_budget < MIN_CHAPTER_TOKENS {
             return Err(OrchestratorError::InvalidState(format!(
-                "CONTEXT_TOO_SMALL: hardware-capped context is {} tokens but the RAG \
-                 packets ({}) + generation headroom ({}) + safety ({}) leave only {} for \
-                 chapter text (minimum {}). Fix: disable some RAG packet categories, \
-                 raise the hardware throttle, or use a smaller/more-quantized model.",
-                effective_ctx, rag_overhead, GEN_HEADROOM, safety_margin,
-                raw_budget, MIN_CHAPTER_TOKENS
+                "CONTEXT_TOO_SMALL: '{}' is the limiting model. Its context is {} tokens, \
+                 bound by {}. After generation headroom ({}), a {}% safety margin and the \
+                 largest of its {} RAG pass(es) ({} tokens), only {} remain for chapter text \
+                 (minimum {}). The RAG library is already being split across passes, so the \
+                 fix is the model, not the packets: drop '{}' from the lineup, or swap it for \
+                 a build with a longer context.",
+                tightest, ctx, limited_by, GEN_HEADROOM, SAFETY_PCT, passes, rag_tokens,
+                chapter_budget, MIN_CHAPTER_TOKENS, tightest
             )));
         }
-        let chapter_budget = raw_budget;
 
         eprintln!(
-            "[orchestrator] effective_ctx={} RAG={}(measured) gen={} safety={}({}%) → chapter_budget={} tokens",
-            effective_ctx, rag_overhead, GEN_HEADROOM, safety_margin, SAFETY_PCT, chapter_budget
+            "[orchestrator] chapter_budget={} tokens (set by '{}', the tightest model)",
+            chapter_budget, tightest
         );
 
         let chapters = chapter_split(&extracted, chapter_budget, CHAPTER_OVERLAP);
@@ -274,6 +282,28 @@ impl Orchestrator {
             ));
         }
 
+        // ── Phase 2: structured-findings mode (opt-in; requires grammar support) ─
+        // Default OFF — the prose pipeline below is unchanged. When
+        // ASG_STRUCTURED_FINDINGS=1 AND the llama build supports --grammar-file,
+        // per-chapter output becomes a JSON findings array that we merge
+        // losslessly (replacing the prose fold). Falls back to prose otherwise.
+        let findings_grammar: Option<PathBuf> = if findings_mode_enabled()
+            && model_loader::llama_detect::llama_supports_grammar()
+        {
+            match crate::findings::write_grammar_file(&self.run_dir) {
+                Ok(p) => {
+                    eprintln!("[orchestrator] Phase 2 structured-findings mode ON → {}", p.display());
+                    Some(p)
+                }
+                Err(e) => {
+                    eprintln!("[orchestrator][WARN] could not write findings grammar ({e}); prose mode");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         // ── Step 4: Per-model loop ──────────────────────────────────────────
         for (model_idx, model_name) in plan.model_order.iter().enumerate() {
             let model_progress_base = 0.15 + (model_idx as f64 / model_count as f64) * 0.70;
@@ -305,35 +335,52 @@ impl Orchestrator {
                     .map_err(|e| OrchestratorError::IoError(e.to_string()))?;
             }
 
-            // Build system prompt via RAG (best-effort; empty if no packets).
-            let rag_dir = PathBuf::from(&model_config.path).join("rag");
-            let system_prompt = build_system_prompt(&rag_dir).unwrap_or_default();
-            let system_prompt_tokens = system_prompt.len() / CHARS_PER_TOKEN;
+            // The RAG delivery plan for this model, worked out in step 2c.
+            // A model with no budget entry could not be configured; it was
+            // already logged there, so fall back to a single RAG-free pass
+            // rather than inventing a plan here.
+            let budget = budgets.get(model_name);
+            let rag = match budget {
+                Some(b) => b.rag.clone(),
+                None => crate::rag_plan::plan_rag(&[], 0),
+            };
+            let model_ctx = budget.map(|b| b.ctx).unwrap_or(2048);
+            let passes = rag.passes();
+
+            if passes > 1 {
+                eprintln!(
+                    "[orchestrator] {}: RAG needs {} passes per chapter — {} chapter(s) × {} = {} inference(s)",
+                    model_name, passes, total_chunks, passes, total_chunks * passes
+                );
+            }
 
             // ── Auto-size context to actual content ─────────────────────────
             // Instead of always allocating the full user-requested context
             // (which wastes VRAM on KV cache the chapter doesn't need),
-            // measure the largest chapter + system prompt, add generation
-            // headroom, and use that.  Freed VRAM → more GPU layers → faster.
+            // measure the largest chapter + the largest RAG pass, add
+            // generation headroom, and use that. Freed VRAM → more GPU layers
+            // → faster. The largest *pass* is the right figure, not the whole
+            // library: no single prompt ever carries more than one batch.
             let max_chapter_tokens = chapters.iter()
                 .map(|c| c.text.len() / CHARS_PER_TOKEN)
                 .max()
                 .unwrap_or(0);
+            let system_prompt_tokens = rag.max_batch_tokens();
             let needed_ctx = max_chapter_tokens + system_prompt_tokens + GEN_HEADROOM
                 + (max_chapter_tokens + system_prompt_tokens + GEN_HEADROOM) * SAFETY_PCT / 100;
             // Round up to nearest 2048 boundary for KV cache alignment.
             let needed_ctx = ((needed_ctx + 2047) / 2048) * 2048;
-            // Cap at model config AND at the VRAM-capped effective context —
-            // the split was budgeted against effective_ctx, and loading larger
-            // than the hardware cap OOMs/spills (the split/load numbers MUST
-            // agree, that mismatch was half the context-ceiling failure).
+            // Cap at model config AND at this model's own effective context —
+            // the split was budgeted against it, and loading larger than the
+            // hardware cap OOMs/spills (the split/load numbers MUST agree,
+            // that mismatch was half the context-ceiling failure).
             let right_sized_ctx = needed_ctx
                 .min(model_config.context_length.unwrap_or(16384) as usize)
-                .min(effective_ctx.max(2048))
+                .min(model_ctx.max(2048))
                 .max(2048); // floor at 2K
 
             eprintln!(
-                "[orchestrator] auto-ctx: max_chapter={}tok sys_prompt={}tok gen={} → needed={} → using {}",
+                "[orchestrator] auto-ctx: max_chapter={}tok rag_pass={}tok gen={} → needed={} → using {}",
                 max_chapter_tokens, system_prompt_tokens, GEN_HEADROOM, needed_ctx, right_sized_ctx
             );
 
@@ -352,7 +399,12 @@ impl Orchestrator {
             let mut chunk_outputs: Vec<PathBuf> = Vec::new();
             let mut model_had_failure = false;
 
-            for (ch_idx, chapter) in chapters.iter().enumerate() {
+            // One inference per (chapter × RAG pass). With a single pass this
+            // is exactly the old loop and the file names are unchanged.
+            let mut inference_seq = 0usize;
+            let total_inferences = total_chunks * passes;
+
+            'chapters: for (ch_idx, chapter) in chapters.iter().enumerate() {
                 let ch_label = if chapter.title.is_empty() {
                     format!("chapter_{:03}", ch_idx + 1)
                 } else {
@@ -362,98 +414,122 @@ impl Orchestrator {
                     format!("{:03}_{}", ch_idx + 1, safe.trim())
                 };
 
-                // Build prompt file: system prompt + chapter text.
-                let prompt_path = prompt_dir.join(format!("{}.txt", ch_label));
-                let prompt_content = if system_prompt.is_empty() {
-                    chapter.text.clone()
-                } else {
-                    format!("{}\n\n{}", system_prompt, chapter.text)
-                };
-
-                if let Err(e) = std::fs::write(&prompt_path, &prompt_content) {
-                    eprintln!("[orchestrator][ERROR] failed to write prompt {}: {}", ch_label, e);
-                    model_had_failure = true;
-                    break;
-                }
-
-                // Pre-flight overflow guard: NEVER send a prompt that cannot
-                // fit the loaded context with generation headroom — llama.cpp
-                // would truncate the front (the RAG instructions) and produce
-                // garbage. Skipping one chapter honestly beats poisoning the
-                // whole fold with a mindless analysis.
-                let prompt_tokens_est = prompt_content.len() / CHARS_PER_TOKEN;
-                if prompt_tokens_est + GEN_HEADROOM > right_sized_ctx {
-                    eprintln!(
-                        "[orchestrator][ERROR] {} {}: prompt ~{}tok + gen {} exceeds loaded ctx {} — \
-                         chapter SKIPPED (budget bug upstream; report this)",
-                        model_name, ch_label, prompt_tokens_est, GEN_HEADROOM, right_sized_ctx
-                    );
-                    model_had_failure = true;
-                    continue;
-                }
-
-                let output_path = output_dir.join(format!("{}_output.txt", ch_label));
-                let log_path = log_dir.join(format!("{}_{}.log", model_name, ch_label));
-
-                let request = InferenceRequest {
-                    chunk_id: ch_idx,
-                    prompt_path,
-                    output_path: output_path.clone(),
-                    log_path,
-                };
-
-                let ch_frac = (ch_idx as f64 + 1.0) / total_chunks as f64;
-                let ch_progress = model_progress_base + 0.05 + ch_frac * 0.60 / model_count as f64;
-                self.emit(
-                    "RUNNING_MODEL",
-                    &format!("{} chapter {}/{}{}", model_name, ch_idx + 1, total_chunks,
-                        if chapter.title.is_empty() { String::new() }
-                        else { format!(" ({})", chapter.title) }),
-                    ch_progress,
-                );
-
-                if let Err(e) = state_bridge::infer(&mut instance, &request) {
-                    // Retry once after a brief pause — CUDA may need time to
-                    // release VRAM from a prior process (stall-kill, previous run, etc.).
-                    eprintln!(
-                        "[orchestrator][WARN] inference failed {}/{}: {} — retrying in 3s",
-                        model_name, ch_label, e
-                    );
-                    std::thread::sleep(std::time::Duration::from_secs(3));
-
-                    // Re-create the instance (fresh state machine). Use the
-                    // SIZED config — retrying at the unsized (user/native)
-                    // context was a guaranteed-worse OOM on capped hardware.
-                    let _ = state_bridge::unload(&mut instance);
-                    instance = state_bridge::make_instance(&sized_config, self.manifest.resource_throttle.throttle_pct);
-                    if let Err(e2) = state_bridge::load(&mut instance) {
-                        eprintln!("[orchestrator][ERROR] reload failed for {}: {}", model_name, e2);
-                        model_had_failure = true;
-                        break;
-                    }
-
-                    // Rebuild prompt & output paths (same paths, fresh attempt).
-                    let retry_request = InferenceRequest {
-                        chunk_id: ch_idx,
-                        prompt_path: request.prompt_path.clone(),
-                        output_path: request.output_path.clone(),
-                        log_path: request.log_path.clone(),
+                for pass_idx in 0..passes {
+                    // Only suffix when there is more than one pass, so existing
+                    // single-pass runs keep their familiar artifact names.
+                    let pass_label = if passes > 1 {
+                        format!("{}_r{}", ch_label, pass_idx + 1)
+                    } else {
+                        ch_label.clone()
                     };
 
-                    if let Err(e2) = state_bridge::infer(&mut instance, &retry_request) {
+                    let system_prompt = rag.prompt_for(pass_idx);
+
+                    // Build prompt file: system prompt + chapter text (+ findings
+                    // instruction in structured-findings mode).
+                    let prompt_path = prompt_dir.join(format!("{}.txt", pass_label));
+                    // Ported from the test box 2026-08-17: prose mode previously sent
+                    // [RAG catalog] + [chapter text] with NO instruction, so the model
+                    // continued the essay instead of analysing it. build_chapter_prompt
+                    // takes system_prompt as a parameter, so it composes with rag_plan's
+                    // per-pass prompt unchanged.
+                    let prompt_content = build_chapter_prompt(
+                        &system_prompt,
+                        &chapter.text,
+                        findings_grammar.is_some(),
+                    );
+
+                    if let Err(e) = std::fs::write(&prompt_path, &prompt_content) {
+                        eprintln!("[orchestrator][ERROR] failed to write prompt {}: {}", pass_label, e);
+                        model_had_failure = true;
+                        break 'chapters;
+                    }
+
+                    // Pre-flight overflow guard: NEVER send a prompt that cannot
+                    // fit the loaded context with generation headroom — llama.cpp
+                    // would truncate the front (the RAG instructions) and produce
+                    // garbage. Skipping one pass honestly beats poisoning the
+                    // whole fold with a mindless analysis.
+                    let prompt_tokens_est = prompt_content.len() / CHARS_PER_TOKEN;
+                    if prompt_tokens_est + GEN_HEADROOM > right_sized_ctx {
                         eprintln!(
-                            "[orchestrator][ERROR] retry also failed {}/{}: {}",
-                            model_name, ch_label, e2
+                            "[orchestrator][ERROR] {} {}: prompt ~{}tok + gen {} exceeds loaded ctx {} — \
+                             pass SKIPPED (budget bug upstream; report this)",
+                            model_name, pass_label, prompt_tokens_est, GEN_HEADROOM, right_sized_ctx
                         );
                         model_had_failure = true;
-                        break;
+                        inference_seq += 1;
+                        continue;
                     }
+
+                    let output_path = output_dir.join(format!("{}_output.txt", pass_label));
+                    let log_path = log_dir.join(format!("{}_{}.log", model_name, pass_label));
+
+                    let request = InferenceRequest {
+                        chunk_id: inference_seq,
+                        prompt_path,
+                        output_path: output_path.clone(),
+                        log_path,
+                        grammar_file: findings_grammar.clone(),
+                    };
+
+                    inference_seq += 1;
+                    let frac = inference_seq as f64 / total_inferences as f64;
+                    let ch_progress = model_progress_base + 0.05 + frac * 0.60 / model_count as f64;
+                    self.emit(
+                        "RUNNING_MODEL",
+                        &format!("{} chapter {}/{}{}{}", model_name, ch_idx + 1, total_chunks,
+                            if chapter.title.is_empty() { String::new() }
+                            else { format!(" ({})", chapter.title) },
+                            if passes > 1 { format!(" — rules {}/{}", pass_idx + 1, passes) }
+                            else { String::new() }),
+                        ch_progress,
+                    );
+
+                    if let Err(e) = state_bridge::infer(&mut instance, &request) {
+                        // Retry once after a brief pause — CUDA may need time to
+                        // release VRAM from a prior process (stall-kill, previous run, etc.).
+                        eprintln!(
+                            "[orchestrator][WARN] inference failed {}/{}: {} — retrying in 3s",
+                            model_name, pass_label, e
+                        );
+                        std::thread::sleep(std::time::Duration::from_secs(3));
+
+                        // Re-create the instance (fresh state machine). Use the
+                        // SIZED config — retrying at the unsized (user/native)
+                        // context was a guaranteed-worse OOM on capped hardware.
+                        let _ = state_bridge::unload(&mut instance);
+                        instance = state_bridge::make_instance(&sized_config, self.manifest.resource_throttle.throttle_pct);
+                        if let Err(e2) = state_bridge::load(&mut instance) {
+                            eprintln!("[orchestrator][ERROR] reload failed for {}: {}", model_name, e2);
+                            model_had_failure = true;
+                            break 'chapters;
+                        }
+
+                        // Rebuild prompt & output paths (same paths, fresh attempt).
+                        let retry_request = InferenceRequest {
+                            chunk_id: request.chunk_id,
+                            prompt_path: request.prompt_path.clone(),
+                            output_path: request.output_path.clone(),
+                            log_path: request.log_path.clone(),
+                            grammar_file: request.grammar_file.clone(),
+                        };
+
+                        if let Err(e2) = state_bridge::infer(&mut instance, &retry_request) {
+                            eprintln!(
+                                "[orchestrator][ERROR] retry also failed {}/{}: {}",
+                                model_name, pass_label, e2
+                            );
+                            model_had_failure = true;
+                            break 'chapters;
+                        }
+                    }
+
+                    chunk_outputs.push(output_path);
+
+                    // After inference the instance returns to Loaded state,
+                    // ready for the next pass — no reload needed.
                 }
-
-                chunk_outputs.push(output_path);
-
-                // After inference the instance returns to Loaded state,
-                // ready for the next chunk — no reload needed.
             }
 
             // Best-effort unload at end of model (may already be Unloaded).
@@ -487,17 +563,61 @@ impl Orchestrator {
                 self.state = OrchestratorState::RunningFusion;
                 self.emit("RUNNING_FUSION", "running fusion model", 0.88);
 
-                // Read output texts for fusion input.
-                let mut fusion_texts: HashMap<String, Vec<String>> = HashMap::new();
-                for (name, paths) in &model_outputs {
-                    let texts: Vec<String> = paths
-                        .iter()
-                        .map(|p| std::fs::read_to_string(p).unwrap_or_default())
-                        .collect();
-                    fusion_texts.insert(name.clone(), texts);
-                }
+                // Build the fusion input. In structured-findings mode this is the
+                // LOSSLESSLY-merged findings table (one compact synthesis pass —
+                // the Phase 2 context-ceiling fix); otherwise it's the raw
+                // per-chapter prose (the existing hierarchical fold).
+                let fusion_input = if findings_grammar.is_some() {
+                    // Collect every chapter's output labeled by model+chapter.
+                    let mut chapters: Vec<(String, String)> = Vec::new();
+                    let mut model_names: Vec<&String> = model_outputs.keys().collect();
+                    model_names.sort();
+                    for name in model_names {
+                        if let Some(paths) = model_outputs.get(name) {
+                            for (i, p) in paths.iter().enumerate() {
+                                let text = std::fs::read_to_string(p).unwrap_or_default();
+                                chapters.push((format!("{} · chapter {}", name, i + 1), text));
+                            }
+                        }
+                    }
+                    let merged = crate::findings::merge_findings(&chapters);
 
-                let fusion_input = FusionInput { model_outputs: fusion_texts };
+                    // Persist the lossless artifacts to the run dir.
+                    let table = crate::findings::render_findings_table(&merged.aggregate);
+                    let _ = std::fs::write(self.run_dir.join("findings_table.md"), &table);
+                    let _ = std::fs::write(
+                        self.run_dir.join("findings.json"),
+                        crate::findings::render_findings_json(&merged.aggregate),
+                    );
+                    eprintln!(
+                        "[orchestrator] findings merge: {} finding(s), {} rule(s), {} chapter(s) parsed, {} fell back to prose",
+                        merged.aggregate.total_findings,
+                        merged.aggregate.rules.len(),
+                        merged.aggregate.chapters_parsed,
+                        merged.parse_failures.len()
+                    );
+
+                    // Synthesis input: the compact table as one leaf, plus any
+                    // unparsed chapters as extra leaves so nothing is dropped.
+                    let mut leaves = vec![table];
+                    for (label, prose) in merged.parse_failures {
+                        leaves.push(format!("=== {} (unparsed prose) ===\n{}", label, prose));
+                    }
+                    let mut synth: HashMap<String, Vec<String>> = HashMap::new();
+                    synth.insert("findings".to_string(), leaves);
+                    FusionInput { model_outputs: synth }
+                } else {
+                    // Read output texts for fusion input (prose fold).
+                    let mut fusion_texts: HashMap<String, Vec<String>> = HashMap::new();
+                    for (name, paths) in &model_outputs {
+                        let texts: Vec<String> = paths
+                            .iter()
+                            .map(|p| std::fs::read_to_string(p).unwrap_or_default())
+                            .collect();
+                        fusion_texts.insert(name.clone(), texts);
+                    }
+                    FusionInput { model_outputs: fusion_texts }
+                };
 
                 match run_fusion(fusion_config, &fusion_input, &self.run_dir, self.manifest.resource_throttle.throttle_pct) {
                     Ok(path) => Some(path),
@@ -516,10 +636,29 @@ impl Orchestrator {
         // ── Step 6: Optimization pass ────────────────────────────────────
         // Score model outputs against hitlist categories and update the
         // optimization state (aggregation, consensus, best-model map).
+        // In structured-findings mode, build the rule_id→category map (union
+        // across all models' packets) so scoring uses REAL per-category counts
+        // instead of the keyword heuristic.
+        let rule_category_map: Option<HashMap<String, String>> = if findings_grammar.is_some() {
+            let mut map: HashMap<String, String> = HashMap::new();
+            for model_name in &plan.model_order {
+                if let Ok(cfg) = self.get_model_config(model_name) {
+                    let rag_dir = PathBuf::from(&cfg.path).join("rag");
+                    for (rule_id, cat) in crate::rag_bridge::build_rule_category_map(&rag_dir) {
+                        map.insert(rule_id, cat);
+                    }
+                }
+            }
+            Some(map)
+        } else {
+            None
+        };
+
         if let Err(e) = run_optimization_pass(
             &mut self.manifest,
             &model_outputs,
             &mut self.score_history,
+            rule_category_map.as_ref(),
         ) {
             eprintln!("[orchestrator][WARN] optimization pass failed: {}", e);
             // Non-fatal: the run still produces output.
@@ -635,6 +774,34 @@ impl Orchestrator {
     }
 }
 
+/// True if Phase 2 structured-findings mode is requested via
+/// `ASG_STRUCTURED_FINDINGS=1` (or `true`). Off by default — the prose pipeline
+/// is unchanged unless explicitly opted in AND the llama build supports grammars.
+/// Build the per-chapter prompt: RAG system prompt, a mode-appropriate
+/// instruction, then the chapter text. Extracted so the instruction-gating
+/// bug (prose mode shipped with NO instruction at all — see
+/// PROSE_ANALYSIS_INSTRUCTION's doc comment) is unit-testable without
+/// spawning a real model.
+fn build_chapter_prompt(system_prompt: &str, chapter_text: &str, structured_findings: bool) -> String {
+    if structured_findings {
+        let base = if system_prompt.is_empty() {
+            chapter_text.to_string()
+        } else {
+            format!("{}\n\n{}", system_prompt, chapter_text)
+        };
+        format!("{}\n\n{}", base, crate::findings::FINDINGS_INSTRUCTION)
+    } else if system_prompt.is_empty() {
+        format!("{}\n{}", PROSE_ANALYSIS_INSTRUCTION, chapter_text)
+    } else {
+        format!("{}\n\n{}\n{}", system_prompt, PROSE_ANALYSIS_INSTRUCTION, chapter_text)
+    }
+}
+fn findings_mode_enabled() -> bool {
+    std::env::var("ASG_STRUCTURED_FINDINGS")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
 /// Strip llama-cli noise from inference output (banner art, "Loading model...",
 /// timing stats, "Exiting..." etc.), keeping only the actual analysis text.
 pub(crate) fn strip_llama_noise(text: &str) -> String {
@@ -688,4 +855,71 @@ pub(crate) fn strip_llama_noise(text: &str) -> String {
     }
 
     lines.join("\n")
+}
+
+// Ported from the test box 2026-08-17 alongside build_chapter_prompt().
+// These need no model: the defect was that prose mode sent no instruction at
+// all, which is a pure string-assembly property and therefore unit-testable.
+#[cfg(test)]
+mod chapter_prompt_tests {
+    use super::*;
+
+    /// The bug this regresses: prose mode (the default — structured findings
+    /// is opt-in) built its prompt as JUST [RAG system prompt] + [chapter
+    /// text], with no instruction anywhere. Combined with llama-completion's
+    /// raw (non-chat-templated) completion mode, the model had no signal to
+    /// do anything but continue the chapter text as if it were the next part
+    /// of the same document — confirmed against a real run, where the model
+    /// output was a stylistic continuation of the source essay, not analysis
+    /// of it.
+    #[test]
+    fn prose_mode_prompt_contains_an_analysis_instruction() {
+        let prompt = build_chapter_prompt("RAG CATALOG HERE", "CHAPTER TEXT HERE", false);
+        assert!(
+            prompt.contains(PROSE_ANALYSIS_INSTRUCTION),
+            "prose-mode prompt must contain an explicit instruction to analyze, \
+             not just [RAG catalog] + [chapter text] with nothing telling the \
+             model what to do with either"
+        );
+    }
+
+    #[test]
+    fn prose_mode_prompt_still_contains_the_chapter_text() {
+        let prompt = build_chapter_prompt("RAG CATALOG HERE", "CHAPTER TEXT HERE", false);
+        assert!(prompt.contains("CHAPTER TEXT HERE"));
+        assert!(prompt.contains("RAG CATALOG HERE"));
+    }
+
+    #[test]
+    fn prose_mode_orders_catalog_then_instruction_then_chapter_text() {
+        let prompt = build_chapter_prompt("RAG CATALOG HERE", "CHAPTER TEXT HERE", false);
+        let catalog_pos = prompt.find("RAG CATALOG HERE").unwrap();
+        let instruction_pos = prompt.find(PROSE_ANALYSIS_INSTRUCTION).unwrap();
+        let chapter_pos = prompt.find("CHAPTER TEXT HERE").unwrap();
+        assert!(catalog_pos < instruction_pos, "catalog must come before the instruction");
+        assert!(instruction_pos < chapter_pos, "instruction must come before the chapter text");
+    }
+
+    /// Even with no RAG packets loaded at all (empty system prompt), prose
+    /// mode must still instruct the model to analyze — dropping the
+    /// instruction silently in this edge case would reproduce the same bug.
+    #[test]
+    fn prose_mode_with_empty_system_prompt_still_gets_the_instruction() {
+        let prompt = build_chapter_prompt("", "CHAPTER TEXT HERE", false);
+        assert!(prompt.contains(PROSE_ANALYSIS_INSTRUCTION));
+        assert!(prompt.contains("CHAPTER TEXT HERE"));
+    }
+
+    /// Structured-findings mode's existing behavior (JSON-only instruction
+    /// appended at the end, after the raw chapter text) must be unchanged by
+    /// this fix.
+    #[test]
+    fn structured_findings_mode_unchanged_instruction_after_chapter_text() {
+        let prompt = build_chapter_prompt("RAG CATALOG HERE", "CHAPTER TEXT HERE", true);
+        assert!(prompt.ends_with(crate::findings::FINDINGS_INSTRUCTION));
+        let chapter_pos = prompt.find("CHAPTER TEXT HERE").unwrap();
+        let instruction_pos = prompt.find(crate::findings::FINDINGS_INSTRUCTION).unwrap();
+        assert!(chapter_pos < instruction_pos);
+        assert!(!prompt.contains(PROSE_ANALYSIS_INSTRUCTION), "structured mode must not mix in the prose instruction");
+    }
 }

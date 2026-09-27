@@ -78,6 +78,11 @@ pub fn enforce_timeout(
     let start = Instant::now();
     let poll_interval = Duration::from_millis(500);
     let startup_timeout = startup_timeout_for(model_path);
+    // Deadline for the "never produced any output" watchdog. Must be at
+    // least as generous as the full inference `timeout` (already scaled for
+    // CPU offload and context size by inference_timeout_for) — see the call
+    // site below for why `startup_timeout` alone is too small.
+    let zero_byte_deadline = timeout.max(startup_timeout);
 
     let mut last_output_size: u64 = 0;
     let mut last_output_change = Instant::now();
@@ -141,22 +146,36 @@ pub fn enforce_timeout(
                 let _ = child.kill();
                 let _ = child.wait();
                 return Ok(()); // success — the output file is complete
-            } else if size == 0 && last_output_change.elapsed() >= startup_timeout {
+            } else if zero_byte_stuck(size, last_output_change.elapsed(), zero_byte_deadline) {
                 // Process has been running for a while but never produced any
                 // output — probably stuck during model load.
+                //
+                // Bounded by `zero_byte_deadline` (>= the full ctx/CPU-scaled
+                // inference timeout), NOT the much smaller model-size-only
+                // `startup_timeout`. `output_path` only receives bytes once
+                // the FIRST token is generated — with `llama-completion`,
+                // boot/load messages go to stderr, not stdout — so on a large
+                // RAG-heavy prompt under CPU-only inference, prefill alone can
+                // legitimately take far longer than `startup_timeout` (a 4GB
+                // model's 180s budget) without anything being "stuck". Using
+                // the small deadline here killed healthy-but-slow prefill and
+                // misreported it as a failed model load (see
+                // model_loader/src/timeout.rs.pre-aismartguy-2026-08-17.bak
+                // for the pre-fix behavior and handoffs.md for the real run
+                // this was found against).
                 eprintln!(
                     "[model_loader][WARN] 0-byte output after {}s — killing subprocess",
-                    startup_timeout.as_secs()
+                    zero_byte_deadline.as_secs()
                 );
                 crate::log_callback::emit_log_line(
                     &format!("[timeout] no output after {}s — process likely stuck during model load",
-                        startup_timeout.as_secs())
+                        zero_byte_deadline.as_secs())
                 );
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(ModelError::Timeout(format!(
                     "subprocess produced no output after {}s (model load may have failed)",
-                    startup_timeout.as_secs()
+                    zero_byte_deadline.as_secs()
                 )));
             }
         }
@@ -172,5 +191,60 @@ pub fn enforce_timeout(
         }
 
         std::thread::sleep(poll_interval);
+    }
+}
+
+/// True if the "process never produced any output" watchdog should fire.
+///
+/// Pulled out as a pure function so the deadline-selection bug (using the
+/// small model-size-only `startup_timeout` instead of the full ctx/CPU-aware
+/// `timeout`) is regression-testable without spawning a real subprocess.
+fn zero_byte_stuck(output_size: u64, elapsed_since_change: Duration, deadline: Duration) -> bool {
+    output_size == 0 && elapsed_since_change >= deadline
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The bug this regresses: a large RAG-heavy prompt on CPU-only
+    /// inference can legitimately sit at 0 output bytes for many minutes
+    /// during prefill (llama-completion sends boot/load messages to stderr,
+    /// not stdout) — well past a 180s model-size-only startup budget, but
+    /// nowhere near the real, ctx-and-CPU-scaled inference timeout. Before
+    /// the fix, this returned true and killed a healthy run.
+    #[test]
+    fn zero_bytes_within_full_inference_timeout_is_not_stuck() {
+        let elapsed = Duration::from_secs(200); // past the old 180s startup budget
+        let deadline = Duration::from_secs(12000); // real inference_timeout_for() result
+        assert!(!zero_byte_stuck(0, elapsed, deadline));
+    }
+
+    #[test]
+    fn zero_bytes_past_the_full_deadline_is_stuck() {
+        let elapsed = Duration::from_secs(12001);
+        let deadline = Duration::from_secs(12000);
+        assert!(zero_byte_stuck(0, elapsed, deadline));
+    }
+
+    #[test]
+    fn nonzero_output_is_never_flagged_stuck_by_this_check() {
+        // Growing/complete output is handled by the stall-detection branch,
+        // not this one — this check only ever looks at the 0-byte case.
+        assert!(!zero_byte_stuck(1, Duration::from_secs(999_999), Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn zero_byte_deadline_is_never_smaller_than_the_real_inference_timeout() {
+        // Regression for the exact bug found in a real run: a 4GB CPU-only
+        // model with a 32K-context, RAG-heavy prompt computes a real
+        // inference timeout of 12000s (inference_timeout_for), while the
+        // model-size-only startup estimate is only 180s. The watchdog must
+        // use the larger of the two.
+        let startup_timeout = Duration::from_secs(180);
+        let real_inference_timeout = Duration::from_secs(12000);
+        let zero_byte_deadline = real_inference_timeout.max(startup_timeout);
+        assert_eq!(zero_byte_deadline, real_inference_timeout);
+        assert!(zero_byte_deadline > startup_timeout);
     }
 }

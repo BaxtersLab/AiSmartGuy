@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use manifest::Manifest;
-use optimization::{compute_scores, update_optimization_state, BookScore, ScoreHistory};
+use optimization::{
+    compute_scores, compute_scores_from_counts, update_optimization_state, BookScore, ScoreHistory,
+};
 use rag_engine::active_slugs;
 
 use crate::errors::{OrchestratorError, OrchestratorResult};
@@ -15,10 +17,15 @@ use crate::types::OrchestratorProgressEvent;
 /// `model_output_paths` maps model names to their ordered output file paths.
 /// Reads the output texts, computes per-category scores, and updates
 /// `manifest.optimization_state` through the optimisation lifecycle.
+/// `findings_rule_category`: when `Some(map)` (structured-findings mode),
+/// per-category hit counts are derived from the parsed findings via the
+/// `rule_id → category` map and scored with `compute_scores_from_counts` —
+/// replacing the keyword-mention heuristic. `None` = the keyword path (default).
 pub fn run_optimization_pass(
     manifest: &mut Manifest,
     model_output_paths: &HashMap<String, Vec<PathBuf>>,
     history: &mut ScoreHistory,
+    findings_rule_category: Option<&HashMap<String, String>>,
 ) -> OrchestratorResult<()> {
     emit_progress(&OrchestratorProgressEvent {
         stage: "OPTIMIZING".into(),
@@ -55,8 +62,27 @@ pub fn run_optimization_pass(
         return Ok(());
     }
 
-    // Compute per-category scores for this book.
-    let book_score: BookScore = compute_scores(&model_outputs, &categories);
+    // Compute per-category scores for this book. In structured-findings mode,
+    // use the REAL per-category hit counts (parsed findings mapped via
+    // rule_id→category); otherwise fall back to the keyword-mention heuristic.
+    let book_score: BookScore = if let Some(rule_cat) = findings_rule_category {
+        let mut model_counts: HashMap<String, HashMap<String, u32>> = HashMap::new();
+        for (model_name, texts) in &model_outputs {
+            let chapters: Vec<(String, String)> = texts
+                .iter()
+                .enumerate()
+                .map(|(i, t)| (format!("chapter {}", i + 1), t.clone()))
+                .collect();
+            let merged = crate::findings::merge_findings(&chapters);
+            model_counts.insert(
+                model_name.clone(),
+                merged.aggregate.per_category_counts(rule_cat),
+            );
+        }
+        compute_scores_from_counts(&model_counts, &categories)
+    } else {
+        compute_scores(&model_outputs, &categories)
+    };
 
     // Feed into the optimization lifecycle (handles aggregation, consensus, mapping).
     update_optimization_state(manifest, book_score, history)

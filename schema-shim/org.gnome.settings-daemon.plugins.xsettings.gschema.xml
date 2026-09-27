@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Schema shim for WebKitGTK on GNOME 50 / Ubuntu 26.04.
+
+  THE PROBLEM
+  -----------
+  GNOME 50's gnome-settings-daemon MOVED three font keys out of
+  `org.gnome.settings-daemon.plugins.xsettings` into a separate schema,
+  `org.gnome.settings-daemon.plugins.xsettings.deprecated`:
+
+      antialiasing    hinting    rgba-order
+
+  WebKitGTK 2.52.3 still reads `antialiasing` from the ORIGINAL id. Asking
+  GSettings for a key a schema does not define is fatal by design, so every
+  WebKitGTK app on this box aborts at startup with:
+
+      GLib-GIO-ERROR: Settings schema
+      'org.gnome.settings-daemon.plugins.xsettings'
+      does not contain a key named 'antialiasing'
+
+  That takes every Tauri app here (GGUF-Chatbox, AiSmartGuy) with it. Nothing here is broken
+  or misconfigured — the system schema is correct and current, and the two
+  packages simply disagree about where these keys live.
+
+  THE SHIM
+  --------
+  This redefines the original schema id with its real GNOME-50 keys PLUS the
+  three that moved, so the lookup succeeds. `GSETTINGS_SCHEMA_DIR` points at
+  this directory for the Chatbox launch only (see run.sh), and GLib searches it
+  ahead of /usr/share/glib-2.0/schemas.
+
+  WHY NOT PATCH THE SYSTEM SCHEMA
+  -------------------------------
+  Because it would be a system-wide change to the desktop settings layer, made
+  to work around someone else's version skew, on a box whose OS was once
+  fatally corrupted by a display-layer edit. This touches nothing outside the
+  app's own folder, needs no root, and is undone by deleting this directory.
+
+  The values mirror the system defaults exactly, so font rendering is
+  unchanged — the point is only that the key EXISTS to be read.
+
+  REMOVE THIS when WebKitGTK is fixed to read the `.deprecated` schema (or when
+  gnome-settings-daemon restores the keys). To check whether it is still
+  needed:
+
+      GSETTINGS_SCHEMA_DIR= ./target/debug/aismartguy-app
+
+  If that starts without the GLib-GIO-ERROR above, delete schema-shim/ and drop
+  the export from run.sh.
+-->
+<schemalist>
+  <!-- Enums must be defined in the same compiled set as the keys that use
+       them; the system copies live in org.gnome.settings-daemon.enums.xml,
+       which is not in this directory. Values copied verbatim. -->
+  <enum id="org.gnome.settings-daemon.GsdFontAntialiasingMode">
+    <value nick="none" value="0"/>
+    <value nick="grayscale" value="1"/>
+    <value nick="rgba" value="2"/>
+  </enum>
+  <enum id="org.gnome.settings-daemon.GsdFontHinting">
+    <value nick="none" value="0"/>
+    <value nick="slight" value="1"/>
+    <value nick="medium" value="2"/>
+    <value nick="full" value="3"/>
+  </enum>
+  <enum id="org.gnome.settings-daemon.GsdFontRgbaOrder">
+    <value nick="rgba" value="0"/>
+    <value nick="rgb" value="1"/>
+    <value nick="bgr" value="2"/>
+    <value nick="vrgb" value="3"/>
+    <value nick="vbgr" value="4"/>
+  </enum>
+
+  <schema gettext-domain="gnome-settings-daemon"
+          id="org.gnome.settings-daemon.plugins.xsettings"
+          path="/org/gnome/settings-daemon/plugins/xsettings/">
+
+    <!-- The three keys GNOME 50 actually defines here. Kept so this shim is a
+         superset: shadowing the system schema with fewer keys would break
+         whatever legitimately reads them. -->
+    <key name="disabled-gtk-modules" type="as">
+      <default>[]</default>
+      <summary>List of explicitly disabled GTK+ modules</summary>
+    </key>
+    <key name="enabled-gtk-modules" type="as">
+      <default>[]</default>
+      <summary>List of explicitly enabled GTK+ modules</summary>
+    </key>
+    <key type="a{sv}" name="overrides">
+      <default>{}</default>
+      <summary>A dictionary of XSETTINGS to override</summary>
+    </key>
+
+    <!-- The three that moved to .deprecated and that WebKitGTK still wants.
+         Defaults match the system .deprecated schema exactly. -->
+    <key name="antialiasing" enum="org.gnome.settings-daemon.GsdFontAntialiasingMode">
+      <default>'grayscale'</default>
+      <summary>Antialiasing</summary>
+    </key>
+    <key name="hinting" enum="org.gnome.settings-daemon.GsdFontHinting">
+      <default>'slight'</default>
+      <summary>Hinting</summary>
+    </key>
+    <key name="rgba-order" enum="org.gnome.settings-daemon.GsdFontRgbaOrder">
+      <default>'rgb'</default>
+      <summary>RGBA order</summary>
+    </key>
+  </schema>
+</schemalist>

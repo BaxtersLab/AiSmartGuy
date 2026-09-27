@@ -1,0 +1,24 @@
+# GBNF grammar for AiSmartGuy Phase 2 structured findings.
+# Constrains a model's per-chapter output to a JSON array of findings that the
+# mechanical merge (orchestrator::findings) parses losslessly. Each object:
+#   {"rule_id","quote","location","severity","note"}
+# severity is one of low|medium|high. An empty array [] means "nothing found".
+# Used with llama.cpp: --grammar-file assets/grammars/findings.gbnf
+
+root     ::= ws "[" ws ( finding ( ws "," ws finding )* )? ws "]" ws
+
+finding  ::= "{" ws
+              "\"rule_id\""  ws ":" ws string ws "," ws
+              "\"quote\""    ws ":" ws string ws "," ws
+              "\"location\"" ws ":" ws string ws "," ws
+              "\"severity\"" ws ":" ws severity ws "," ws
+              "\"note\""     ws ":" ws string ws
+            "}"
+
+severity ::= "\"low\"" | "\"medium\"" | "\"high\""
+
+string   ::= "\"" char* "\""
+char     ::= [^"\\] | "\\" ( ["\\/bfnrt] | "u" hex hex hex hex )
+hex      ::= [0-9a-fA-F]
+
+ws       ::= [ \t\n\r]*

@@ -6,15 +6,78 @@ use lopdf::{Dictionary, Document, Object, Stream};
 use crate::errors::PdfIoError;
 use crate::metadata_embed::set_info_key;
 
+/// Conservative max characters per drawn line at Helvetica 10pt within the
+/// page's usable width (595pt page, 50pt left margin, ~495pt usable — this
+/// text has a lot of capitals/brackets, which are wider than average, so
+/// this stays well under the ~99-char point where real lines were observed
+/// getting cut off).
+const MAX_CHARS_PER_LINE: usize = 90;
+
+/// Greedy word-wrap: breaks `line` into pieces no longer than `max_chars`,
+/// breaking on whitespace where possible. A single "word" longer than
+/// `max_chars` (rare — e.g. a long URL) is hard-broken rather than left to
+/// overflow the page, since that's exactly the bug this fixes.
+fn wrap_line(line: &str, max_chars: usize) -> Vec<String> {
+    if line.is_empty() {
+        return vec![String::new()];
+    }
+    let mut out = Vec::new();
+    let mut current = String::new();
+    for word in line.split(' ') {
+        let mut word = word;
+        loop {
+            let sep = if current.is_empty() { 0 } else { 1 };
+            if current.len() + sep + word.len() <= max_chars {
+                if sep == 1 {
+                    current.push(' ');
+                }
+                current.push_str(word);
+                break;
+            }
+            if current.is_empty() {
+                // The word alone doesn't fit — hard-break it.
+                let (head, tail) = word.split_at(max_chars.min(word.len()));
+                out.push(head.to_string());
+                word = tail;
+                if word.is_empty() {
+                    break;
+                }
+                continue;
+            }
+            out.push(std::mem::take(&mut current));
+        }
+    }
+    if !current.is_empty() {
+        out.push(current);
+    }
+    if out.is_empty() {
+        out.push(String::new());
+    }
+    out
+}
+
 /// Write the final output PDF as a standalone report (no original book pages),
 /// with the manifest embedded in the Info dictionary.
 pub fn write_final_pdf(
-    _original_pdf: &Path,
+    original_pdf: &Path,
     results_text: &str,
     manifest_json: &str,
     output_path: &Path,
 ) -> Result<(), PdfIoError> {
-    let mut doc = Document::with_version("1.5");
+    write_final_pdf_versioned(original_pdf, results_text, manifest_json, output_path, "1.5")
+}
+
+/// Same as [`write_final_pdf`], with the PDF version made explicit —
+/// exists so the xref-table format (streams on 1.5+, classic plain-text
+/// table below that) is testable without re-running a real model.
+pub fn write_final_pdf_versioned(
+    _original_pdf: &Path,
+    results_text: &str,
+    manifest_json: &str,
+    output_path: &Path,
+    version: &str,
+) -> Result<(), PdfIoError> {
+    let mut doc = Document::with_version(version);
 
     // Built-in Helvetica font — no embedding required
     let font_id = doc.add_object(Object::Dictionary({
@@ -42,9 +105,24 @@ pub fn write_final_pdf(
         d
     }));
 
-    // Split the report into pages of ~55 lines each
+    // Split the report into pages of ~55 lines each.
+    //
+    // `build_text_content` draws each line as a single `Tj` at a fixed X
+    // with no word-wrap. The model's real output puts a whole paragraph of
+    // analysis on one line (no internal newlines), regularly 200+
+    // characters — Helvetica 10pt only fits ~90-95 chars in the page's
+    // usable width (595pt page, 50pt margins), so anything past that ran
+    // off the page and was silently lost (confirmed: every extracted line
+    // from a real report was truncated to ~100 chars, with the very last
+    // line cut off mid-word — not a parser/xref issue, just missing wrap).
+    // Wrapping BEFORE chunking into pages so `lines_per_page` counts the
+    // same physical lines that will actually be drawn.
     let title = "AiSmartGuy \u{2014} Analysis Results";
-    let lines: Vec<&str> = results_text.lines().collect();
+    let wrapped_lines: Vec<String> = results_text
+        .lines()
+        .flat_map(|l| wrap_line(l, MAX_CHARS_PER_LINE))
+        .collect();
+    let lines: Vec<&str> = wrapped_lines.iter().map(|s| s.as_str()).collect();
     let lines_per_page: usize = 55;
 
     let mut page_ids = Vec::new();
@@ -189,6 +267,67 @@ fn build_text_content(title: &str, body: &str) -> Result<Vec<u8>, PdfIoError> {
     Content { operations: ops }
         .encode()
         .map_err(|e| PdfIoError::PdfParseError(e.to_string()))
+}
+
+#[cfg(test)]
+mod wrap_tests {
+    use super::*;
+
+    /// The bug this regresses: report generation drew each raw line as one
+    /// unwrapped `Tj`, so any line past ~99 chars ran off the page's right
+    /// edge and was lost when the PDF was read back — confirmed against a
+    /// real report, where every long analysis line was cut to ~100 chars,
+    /// the last one mid-word.
+    #[test]
+    fn wrap_line_never_exceeds_the_max_width() {
+        let long = "word ".repeat(100); // way over MAX_CHARS_PER_LINE
+        for piece in wrap_line(&long, MAX_CHARS_PER_LINE) {
+            assert!(
+                piece.len() <= MAX_CHARS_PER_LINE,
+                "piece {:?} is {} chars, over the {}-char page-width budget",
+                piece, piece.len(), MAX_CHARS_PER_LINE
+            );
+        }
+    }
+
+    #[test]
+    fn wrap_line_short_line_is_unchanged() {
+        let short = "a short analysis line";
+        assert_eq!(wrap_line(short, MAX_CHARS_PER_LINE), vec![short.to_string()]);
+    }
+
+    #[test]
+    fn wrap_line_preserves_every_word_no_content_lost() {
+        let original = "The passage includes pacing ('forty years'), embedded commands \
+            ('Contributions to the Project Gutenberg Literary Archive Foundation are tax \
+            deductible'), and future pace ('for generations to come').";
+        let wrapped = wrap_line(original, MAX_CHARS_PER_LINE);
+        let rejoined = wrapped.join(" ");
+        for word in original.split_whitespace() {
+            assert!(
+                rejoined.contains(word),
+                "word {:?} from the original line is missing after wrapping — this is the \
+                 exact real-world sentence that was cut off mid-word in a real report",
+                word
+            );
+        }
+    }
+
+    /// A single "word" longer than the max width on its own (e.g. a long
+    /// token with no spaces) must still be hard-broken to fit, not left to
+    /// overflow the page.
+    #[test]
+    fn wrap_line_hard_breaks_an_unbreakable_long_word() {
+        let long_word = "x".repeat(250);
+        for piece in wrap_line(&long_word, MAX_CHARS_PER_LINE) {
+            assert!(piece.len() <= MAX_CHARS_PER_LINE);
+        }
+    }
+
+    #[test]
+    fn wrap_line_empty_line_stays_a_single_empty_line() {
+        assert_eq!(wrap_line("", MAX_CHARS_PER_LINE), vec![String::new()]);
+    }
 }
 
 

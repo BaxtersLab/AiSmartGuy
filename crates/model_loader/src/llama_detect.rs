@@ -72,6 +72,28 @@ pub fn resolve_llama_path() -> PathBuf {
     detect_llama().unwrap_or_else(|| llama_local_path())
 }
 
+/// True if the resolved llama.cpp build supports `--grammar-file` (Phase 2
+/// structured findings). Probed ONCE by running the binary with `--help` and
+/// scanning for the flag; the result is cached for the process. Returns `false`
+/// if the binary is absent or the flag is unsupported — callers then fall back
+/// to prose mode.
+pub fn llama_supports_grammar() -> bool {
+    use std::sync::OnceLock;
+    static SUPPORTED: OnceLock<bool> = OnceLock::new();
+    *SUPPORTED.get_or_init(|| {
+        let path = resolve_llama_path();
+        std::process::Command::new(&path)
+            .arg("--help")
+            .output()
+            .map(|o| {
+                let out = String::from_utf8_lossy(&o.stdout);
+                let err = String::from_utf8_lossy(&o.stderr);
+                out.contains("--grammar-file") || err.contains("--grammar-file")
+            })
+            .unwrap_or(false)
+    })
+}
+
 /// Read the native context length from a GGUF file's metadata.
 ///
 /// Scans the GGUF key-value metadata for the key
@@ -135,6 +157,71 @@ fn gguf_read_u32_key(model_path: &std::path::Path, suffix: &str) -> Option<u32> 
 /// heuristic as `auto_gpu_layers`.
 ///
 /// Returns `None` if VRAM/model info is unavailable (caller should fall back
+/// Bytes of KV cache consumed per token, read from the model's own metadata.
+///
+/// WHY THIS IS NOT A CONSTANT
+/// The previous code assumed "~1 MB per 16 tokens" (64 KB/token) everywhere.
+/// That is wrong for essentially every modern model, and wrong in the unsafe
+/// direction — it UNDER-reserves, so the sizing math concludes a layer split
+/// fits when it does not, and llama.cpp then dies with an out-of-memory error
+/// during model load.
+///
+/// The real figure is `2 (K and V) * layers * kv_heads * head_dim * 2 bytes`:
+///
+///   Mistral 7B (GQA, 8 kv heads):  2*32*8*128*2   = 128 KB/token  (2x the guess)
+///   Llama-2 7B  (no GQA, 32 heads): 2*32*32*128*2 = 512 KB/token  (8x the guess)
+///
+/// Measured consequence: at ctx=32768 the guess reserved 2048 MB where Mistral
+/// 7B actually needs 4096 MB, on a 6 GB card. That is exactly the gap that made
+/// a model load fail in the app while the same model ran fine from the command
+/// line at a smaller context.
+///
+/// Returns `None` when the metadata is unreadable, so callers can fall back.
+pub fn kv_bytes_per_token(model_path: &std::path::Path) -> Option<u64> {
+    let layers = gguf_block_count(model_path)? as u64;
+
+    // Grouped-query attention stores K/V for kv_heads, not for all heads.
+    // Models without GQA omit head_count_kv, where it equals head_count.
+    let kv_heads = gguf_read_u32_key(model_path, "attention.head_count_kv")
+        .or_else(|| gguf_read_u32_key(model_path, "attention.head_count"))?
+        as u64;
+
+    // Prefer the explicit key length; otherwise derive it as embd / heads.
+    let head_dim = match gguf_read_u32_key(model_path, "attention.key_length") {
+        Some(d) if d > 0 => d as u64,
+        _ => {
+            let embd = gguf_read_u32_key(model_path, "embedding_length")? as u64;
+            let heads = gguf_read_u32_key(model_path, "attention.head_count")? as u64;
+            if heads == 0 {
+                return None;
+            }
+            embd / heads
+        }
+    };
+
+    if layers == 0 || kv_heads == 0 || head_dim == 0 {
+        return None;
+    }
+    // K and V, fp16 (2 bytes per element) — llama.cpp's default cache type.
+    Some(2 * layers * kv_heads * head_dim * 2)
+}
+
+/// KV cache size in MB for `ctx_tokens`, from metadata where possible.
+///
+/// Falls back to the old 64 KB/token guess only when metadata is unreadable.
+/// The fallback is deliberately kept rather than defaulting to something
+/// larger: an unreadable GGUF is also one whose layer count we do not know, so
+/// the whole estimate is already approximate at that point.
+fn kv_reserve_mb(model_path: &std::path::Path, ctx_tokens: u32) -> u32 {
+    match kv_bytes_per_token(model_path) {
+        Some(per_token) => {
+            let bytes = per_token.saturating_mul(ctx_tokens as u64);
+            ((bytes / (1024 * 1024)) as u32).max(64)
+        }
+        None => (ctx_tokens / 16).max(500),
+    }
+}
+
 /// to a safe default).
 pub fn max_context_for_vram(model_path: &std::path::Path, vram_mb: u32) -> Option<u32> {
     let file_size_mb = std::fs::metadata(model_path)
@@ -153,7 +240,12 @@ pub fn max_context_for_vram(model_path: &std::path::Path, vram_mb: u32) -> Optio
 
     let vram_for_kv = vram_mb.saturating_sub(layer_reservation).saturating_sub(overhead);
     // KV heuristic: ~1 MB per 16 tokens (same as auto_gpu_layers).
-    let max_ctx = vram_for_kv * 16;
+    // Convert remaining VRAM into context using the model's REAL per-token KV
+    // cost. Multiplying by 16 is the inverse of the old 64 KB/token guess, so it
+    // reported a ceiling roughly twice as high as a GQA model can hold and eight
+    // times for a non-GQA one.
+    let per_token = kv_bytes_per_token(model_path).unwrap_or(64 * 1024);
+    let max_ctx = (((vram_for_kv as u64) * 1024 * 1024) / per_token.max(1)) as u32;
     // Floor at 2048, round down to 2048 boundary.
     let max_ctx = (max_ctx / 2048) * 2048;
     let max_ctx = max_ctx.max(2048);
@@ -191,7 +283,7 @@ pub fn auto_gpu_layers(model_path: &std::path::Path, vram_mb: u32, ctx_tokens: u
     // Reserve VRAM for KV cache + embeddings + CUDA overhead.
     // KV cache scales linearly with context length; use ~1 MB per 16 tokens
     // as a conservative heuristic (covers typical GQA architectures in fp16).
-    let kv_reserve = (ctx_tokens / 16).max(500);
+    let kv_reserve = kv_reserve_mb(model_path, ctx_tokens);
     let overhead = 300_u32; // CUDA scratch + embedding tables
     let reserved_mb = kv_reserve + overhead;
     let usable_vram = vram_mb.saturating_sub(reserved_mb);

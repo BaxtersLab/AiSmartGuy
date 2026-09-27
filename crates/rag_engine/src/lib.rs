@@ -12,4 +12,5 @@ pub use packet::{
     RagRule, Severity,
 };
 pub use hitlist::{HitlistEntry, active_entries, active_slugs, catalog};
+pub use prompt_builder::{build_system_prompt_with_detail, PromptDetail};
 pub use api::RagEngine;

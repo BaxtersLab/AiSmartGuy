@@ -11,6 +11,7 @@ pub mod loader;
 pub mod inferencer;
 pub mod llama_detect;
 pub mod log_callback;
+pub mod cancel;
 
 pub use errors::{ModelError, LoaderResult};
 pub use types::{ModelConfig, ModelInstance, ModelState, InferenceRequest};
@@ -19,5 +20,5 @@ pub use command_builder::build_command;
 pub use loader::{load_model, unload_model};
 pub use inferencer::{run_inference, DEFAULT_TIMEOUT};
 pub use timeout::inference_timeout_for;
-pub use llama_detect::{auto_gpu_layers, detect_llama, gguf_block_count, gguf_context_length, llama_install_dir, llama_local_path, max_context_for_vram, resolve_llama_path, LLAMA_BIN};
+pub use llama_detect::{kv_bytes_per_token, auto_gpu_layers, detect_llama, gguf_block_count, gguf_context_length, llama_install_dir, llama_local_path, max_context_for_vram, resolve_llama_path, LLAMA_BIN};
 pub use log_callback::{set_log_callback, clear_log_callback};

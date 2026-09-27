@@ -37,6 +37,36 @@ pub fn compute_scores(
     BookScore { model_scores }
 }
 
+/// Compute per-category scores from REAL per-category hit counts (Phase 2
+/// structured findings) instead of the keyword-mention heuristic — this is the
+/// "richer output" path the doc-comment on `compute_scores` refers to.
+///
+/// `model_counts`: model_name → (category → hit_count), typically derived from
+/// the structured findings aggregate (rule counts mapped to their categories).
+/// `categories`:   categories to score (a missing category counts as 0 hits).
+pub fn compute_scores_from_counts(
+    model_counts: &HashMap<String, HashMap<String, u32>>,
+    categories: &[String],
+) -> BookScore {
+    let mut model_scores: Vec<ModelCategoryScore> = Vec::new();
+
+    for (model_name, cat_counts) in model_counts {
+        for category in categories {
+            let match_count = cat_counts.get(category).copied().unwrap_or(0);
+            let score = score_formula(1.0, 1.0, match_count);
+            model_scores.push(ModelCategoryScore {
+                model_name: model_name.clone(),
+                category: category.clone(),
+                score,
+                false_positives: 0,
+                hits: match_count,
+            });
+        }
+    }
+
+    BookScore { model_scores }
+}
+
 /// Count non-overlapping case-insensitive occurrences of `keyword` in `text`.
 fn count_mentions(text: &str, keyword: &str) -> u32 {
     if keyword.is_empty() {
@@ -88,5 +118,24 @@ mod tests {
         let cats = vec!["fallacy".to_string(), "tone".to_string()];
         let book = compute_scores(&outputs, &cats);
         assert_eq!(book.model_scores.len(), 2);
+    }
+
+    #[test]
+    fn test_compute_scores_from_counts_uses_real_hits() {
+        // model1: 3 hits in "fallacy", 0 in "tone" (tone absent from the map).
+        let mut counts: HashMap<String, HashMap<String, u32>> = HashMap::new();
+        let mut m1 = HashMap::new();
+        m1.insert("fallacy".to_string(), 3u32);
+        counts.insert("model1".to_string(), m1);
+        let cats = vec!["fallacy".to_string(), "tone".to_string()];
+
+        let book = compute_scores_from_counts(&counts, &cats);
+        assert_eq!(book.model_scores.len(), 2);
+        let fallacy = book.model_scores.iter().find(|s| s.category == "fallacy").unwrap();
+        let tone = book.model_scores.iter().find(|s| s.category == "tone").unwrap();
+        assert_eq!(fallacy.hits, 3);
+        assert!((fallacy.score - (1.0 + 3.0_f32).ln()).abs() < 1e-6); // ln(1+3)
+        assert_eq!(tone.hits, 0, "missing category scores zero");
+        assert!((tone.score - 0.0).abs() < 1e-6);
     }
 }

@@ -32,6 +32,11 @@ pub fn build_command(instance: &ModelInstance, request: &InferenceRequest) -> Co
         .arg("-n")
         .arg("2048");
 
+    // Phase 2: constrain output to the structured-findings grammar when set.
+    if let Some(grammar) = &request.grammar_file {
+        cmd.arg("--grammar-file").arg(grammar);
+    }
+
     cmd
 }
 
@@ -58,6 +63,7 @@ mod tests {
             prompt_path: PathBuf::from("/tmp/prompt.txt"),
             output_path: PathBuf::from("/tmp/output.txt"),
             log_path: PathBuf::from("/tmp/run.log"),
+            grammar_file: None,
         };
         let cmd = build_command(&inst, &req);
         let args: Vec<_> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
@@ -67,5 +73,23 @@ mod tests {
         assert!(args.contains(&"16".to_string()));
         assert!(args.contains(&"--threads".to_string()));
         assert!(args.contains(&"4".to_string())); // default threads from ModelInstance::new
+        // No grammar arg when grammar_file is None.
+        assert!(!args.contains(&"--grammar-file".to_string()));
+    }
+
+    #[test]
+    fn test_command_emits_grammar_file_when_set() {
+        let inst = make_instance();
+        let req = InferenceRequest {
+            chunk_id: 0,
+            prompt_path: PathBuf::from("/tmp/prompt.txt"),
+            output_path: PathBuf::from("/tmp/output.txt"),
+            log_path: PathBuf::from("/tmp/run.log"),
+            grammar_file: Some(PathBuf::from("/tmp/findings.gbnf")),
+        };
+        let cmd = build_command(&inst, &req);
+        let args: Vec<_> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        let i = args.iter().position(|a| a == "--grammar-file").expect("grammar flag present");
+        assert_eq!(args[i + 1], "/tmp/findings.gbnf");
     }
 }

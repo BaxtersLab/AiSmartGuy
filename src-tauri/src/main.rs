@@ -64,8 +64,29 @@ async fn startup_scan(app: AppHandle) -> Result<(), String> {
     }
 
     // Show main loader window.
+    //
+    // The size nudge that used to live here has been REMOVED. It was added on
+    // 2026-08-04 on the theory that showing a `"visible": false` window leaves
+    // the compositor holding a stale input region, and that setting the size
+    // one pixel different and straight back would force a recompute.
+    //
+    // Both halves of that were measured on 2026-08-05 and both are false:
+    //
+    //  * A GTK 3.24.52 window created hidden and shown later reports EXACTLY
+    //    the same geometry as one created visible — 1012x889, zero inset. No
+    //    staleness to correct.
+    //  * On Wayland GTK clamps to the size the compositor configured, so
+    //    `set_size(h+1); set_size(h)` never changed the allocation at all. The
+    //    nudge was inert; it cannot have fixed anything.
+    //
+    // Leaving dead code in place that claims to fix a live bug is worse than
+    // having no fix, so it is gone until the real cause is known.
     if let Some(w) = app.get_webview_window("main") {
         w.show().map_err(|e| e.to_string())?;
+        // Centre AFTER showing: a hidden window has no reliable geometry to
+        // centre against, which is how it ended up hanging off the bottom edge.
+        let _ = w.center();
+        let _ = w.set_focus();
     }
 
     // Tell the main window it can transition to Ready.
@@ -198,6 +219,9 @@ fn cmd_auto_run(
         message: "Starting analysis…".into(),
     }).ok();
 
+    // A cancelled run leaves the flag set; without clearing it here the
+    // next run dies instantly with no explanation.
+    model_loader::cancel::clear();
     ui::commands::start_run(
         state.inner().clone(),
         manifest_path,
@@ -256,6 +280,9 @@ fn cmd_run_with_stored_config(
         message: "Starting analysis…".into(),
     }).ok();
 
+    // A cancelled run leaves the flag set; without clearing it here the
+    // next run dies instantly with no explanation.
+    model_loader::cancel::clear();
     ui::commands::start_run(
         state.inner().clone(),
         manifest_path,
@@ -300,6 +327,9 @@ fn cmd_start_run(
     run_dir: String,
 ) -> Result<(), String> {
     app.emit("pipeline-progress", PipelineProgress { percent: 55.0, message: "Running pipeline…".into() }).ok();
+    // A cancelled run leaves the flag set; without clearing it here the
+    // next run dies instantly with no explanation.
+    model_loader::cancel::clear();
     ui::commands::start_run(
         state.inner().clone(),
         PathBuf::from(manifest_path),
@@ -309,9 +339,17 @@ fn cmd_start_run(
     Ok(())
 }
 
+/// Stop the current run.
+///
+/// Sets BOTH flags. The `CancelFlag` managed state is the original one and is
+/// kept so nothing that already reads it changes behaviour; the model_loader
+/// flag is the one the inference loop actually polls. Before this, only the
+/// former was set — and nothing read it — so cancelling did nothing at all and
+/// the only way to stop a run was to close the application.
 #[tauri::command]
 fn cmd_cancel_run(cancel: State<CancelFlag>) {
     cancel.0.store(true, Ordering::SeqCst);
+    model_loader::cancel::request();
 }
 
 #[tauri::command]
@@ -356,13 +394,110 @@ fn cmd_cancel_model_download(
 
 // ── Model library helpers ────────────────────────────────────────────────────
 
-/// On-disk folder where downloaded GGUF models live.
+/// Where the operator's chosen model library is remembered.
+fn library_pref_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let base = app.path().app_local_data_dir()
+        .map_err(|e| format!("cannot resolve app data dir: {}", e))?;
+    std::fs::create_dir_all(&base).map_err(|e| e.to_string())?;
+    Ok(base.join("model_library.txt"))
+}
+
+/// On-disk folder where GGUF models live.
+///
+/// Defaults to `<app data>/models`, but the operator can point it at their real
+/// library. Models are multi-gigabyte and normally live on a separate disk;
+/// requiring them inside the app's private data directory means copying 5 GB
+/// per model just to make the app notice it.
 fn model_library_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    if let Ok(p) = library_pref_path(app) {
+        if let Ok(saved) = std::fs::read_to_string(&p) {
+            let saved = saved.trim();
+            // Fall through to the default if the saved path has gone away —
+            // an unplugged drive should not make the app unusable.
+            if !saved.is_empty() && PathBuf::from(saved).is_dir() {
+                return Ok(PathBuf::from(saved));
+            }
+        }
+    }
     let base = app.path().app_local_data_dir()
         .map_err(|e| format!("cannot resolve app data dir: {}", e))?;
     let dir = base.join("models");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir)
+}
+
+/// Open a folder picker and remember the chosen model library.
+///
+/// `Err("cancelled")` means the operator dismissed the dialog; the caller
+/// treats that as a no-op rather than something to report.
+#[tauri::command]
+async fn cmd_browse_model_library(app: AppHandle) -> Result<String, String> {
+    let start = model_library_dir(&app).ok();
+    let mut dlg = rfd::AsyncFileDialog::new().set_title("Select model library folder");
+    if let Some(d) = start.as_ref() {
+        dlg = dlg.set_directory(d);
+    }
+    let picked = dlg.pick_folder().await.ok_or_else(|| "cancelled".to_string())?;
+    let path = picked.path().to_string_lossy().into_owned();
+    std::fs::write(library_pref_path(&app)?, &path).map_err(|e| e.to_string())?;
+    Ok(path)
+}
+
+/// Forget the chosen library and fall back to the app's own models folder.
+#[tauri::command]
+fn cmd_reset_model_library(app: AppHandle) -> Result<String, String> {
+    if let Ok(p) = library_pref_path(&app) {
+        let _ = std::fs::remove_file(p);
+    }
+    Ok(model_library_dir(&app)?.to_string_lossy().into_owned())
+}
+
+/// Set the library from a typed or pasted path.
+///
+/// Rejects a path that is not a directory instead of storing it: a saved bad
+/// path would silently fall back to the default on next read, and the operator
+/// would see the default without ever being told their entry was refused.
+#[tauri::command]
+fn cmd_set_model_library(app: AppHandle, path: String) -> Result<String, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return cmd_reset_model_library(app);
+    }
+    let p = PathBuf::from(trimmed);
+    if !p.is_dir() {
+        return Err(format!("not a folder: {}", trimmed));
+    }
+    std::fs::write(library_pref_path(&app)?, trimmed).map_err(|e| e.to_string())?;
+    Ok(trimmed.to_string())
+}
+
+/// Which library is in force, and whether it is the operator's choice or the
+/// built-in default.
+#[derive(Clone, Serialize)]
+struct ModelLibraryInfo {
+    path: String,
+    default_path: String,
+    is_override: bool,
+}
+
+/// Report the effective library AND the default, so the UI can say which one is
+/// active rather than showing a bare path.
+///
+/// This matters because the fetcher downloads into the *default* folder while
+/// the lanes list the *effective* one. Without saying which is which, a model
+/// can be fetched successfully and then be invisible in the dropdowns, with
+/// nothing on screen to explain it.
+#[tauri::command]
+fn cmd_model_library_info(app: AppHandle) -> Result<ModelLibraryInfo, String> {
+    let base = app.path().app_local_data_dir()
+        .map_err(|e| format!("cannot resolve app data dir: {}", e))?;
+    let default_path = base.join("models");
+    let effective = model_library_dir(&app)?;
+    Ok(ModelLibraryInfo {
+        is_override: effective != default_path,
+        path: effective.to_string_lossy().into_owned(),
+        default_path: default_path.to_string_lossy().into_owned(),
+    })
 }
 
 /// On-disk folder where output report PDFs are saved.
@@ -402,19 +537,38 @@ fn cmd_get_model_library_path(app: AppHandle) -> Result<String, String> {
     Ok(dir.to_string_lossy().into_owned())
 }
 
-/// Open the model library folder in Windows Explorer.
+/// The platform's "reveal this folder" command.
+///
+/// `explorer.exe` exists only on Windows. The Linux equivalent is `xdg-open`,
+/// which hands off to whatever file manager the desktop registered (Nautilus
+/// under GNOME). Spawning `explorer.exe` there fails with "No such file or
+/// directory", so both buttons below simply appeared broken.
+#[cfg(target_os = "windows")]
+const FILE_MANAGER: &str = "explorer.exe";
+#[cfg(target_os = "macos")]
+const FILE_MANAGER: &str = "open";
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+const FILE_MANAGER: &str = "xdg-open";
+
+/// Reveal `dir` in the desktop's file manager.
+fn open_in_file_manager(dir: &std::path::Path) -> Result<(), String> {
+    std::process::Command::new(FILE_MANAGER)
+        .arg(dir.as_os_str())
+        .spawn()
+        .map_err(|e| format!("failed to open {} with {}: {}",
+                             dir.display(), FILE_MANAGER, e))?;
+    Ok(())
+}
+
+/// Open the model library folder in the desktop's file manager.
 #[tauri::command]
 fn cmd_open_model_library(app: AppHandle) -> Result<(), String> {
     let dir = model_library_dir(&app)?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    std::process::Command::new("explorer.exe")
-        .arg(dir.as_os_str())
-        .spawn()
-        .map_err(|e| format!("failed to open explorer: {}", e))?;
-    Ok(())
+    open_in_file_manager(&dir)
 }
 
-/// Open the output folder in Windows Explorer.
+/// Open the output folder in the desktop's file manager.
 #[tauri::command]
 fn cmd_open_output_folder(app: AppHandle, path: String) -> Result<(), String> {
     let dir = if path.is_empty() {
@@ -423,10 +577,7 @@ fn cmd_open_output_folder(app: AppHandle, path: String) -> Result<(), String> {
         PathBuf::from(&path)
     };
     if dir.is_dir() {
-        std::process::Command::new("explorer.exe")
-            .arg(dir.as_os_str())
-            .spawn()
-            .map_err(|e| format!("failed to open explorer: {}", e))?;
+        open_in_file_manager(&dir)?;
     }
     Ok(())
 }
@@ -477,8 +628,11 @@ fn cmd_list_library_subfolders(app: AppHandle, base_dir: String) -> Result<Vec<L
     let mut folders = Vec::new();
     let rd = std::fs::read_dir(&dir).map_err(|e| e.to_string())?;
     for item in rd.flatten() {
-        let ft = item.file_type().map_err(|e| e.to_string())?;
-        if !ft.is_dir() { continue; }
+        // `DirEntry::file_type` does NOT follow symlinks, so a symlinked model
+        // folder reports as a symlink and would be skipped. `path().is_dir()`
+        // follows — which matters because linking a big library into place is
+        // the obvious way to avoid copying gigabytes.
+        if !item.path().is_dir() { continue; }
         let sub_name = item.file_name().to_string_lossy().into_owned();
         let sub_path = item.path();
 
@@ -697,6 +851,55 @@ async fn cmd_download_hf_model(app: AppHandle, url: String) -> Result<(), String
             Err(msg)
         }
     }
+}
+
+// ── Context-size VRAM profile ────────────────────────────────────────────────
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct CtxVramProfile {
+    /// Bytes of KV cache per token, read from the model's own GGUF metadata.
+    kv_bytes_per_token: u64,
+    /// The model's native training context — options above this are pointless.
+    native_ctx: u32,
+    /// Which lane model these numbers came from (the most expensive one).
+    model_name: String,
+}
+
+/// KV-cache cost per token for the most expensive of the given model folders.
+///
+/// The context-size UI previously carried hardcoded VRAM labels ("32K ~4 GB")
+/// that assumed roughly 128 KB/token. That is a large-model figure: a 1B with
+/// grouped-query attention uses 24 KB/token, making those labels about 5x too
+/// pessimistic and steering the operator to a smaller context than the hardware
+/// can hold. The setting applies to every lane at once, so the worst case
+/// across the selected models is the honest number to show.
+///
+/// Returns None when no folder yields readable metadata, so the UI can keep its
+/// static text rather than display something invented.
+#[tauri::command]
+fn cmd_ctx_vram_profile(model_dirs: Vec<String>) -> Option<CtxVramProfile> {
+    let mut worst: Option<CtxVramProfile> = None;
+    for dir in model_dirs.iter().filter(|d| !d.trim().is_empty()) {
+        let Ok(path) = first_gguf_in(dir) else { continue };
+        let Some(kv) = model_loader::kv_bytes_per_token(&path) else { continue };
+        let native = model_loader::gguf_context_length(&path).unwrap_or(0);
+        let name = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| dir.clone());
+        let better = match &worst {
+            None => true,
+            Some(w) => kv > w.kv_bytes_per_token,
+        };
+        if better {
+            worst = Some(CtxVramProfile {
+                kv_bytes_per_token: kv,
+                native_ctx: native,
+                model_name: name,
+            });
+        }
+    }
+    worst
 }
 
 // ── Begin Run — build manifest from lane selections and run pipeline ─────────
@@ -1035,7 +1238,10 @@ fn cmd_begin_run(
         // Catch panics so a crash in pdf-extract or the orchestrator doesn't
         // silently kill the thread, leaving the UI stuck forever.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            ui::commands::start_run(bg_state, manifest_path, run_dir.clone())
+            // A cancelled run leaves the flag set; without clearing it here the
+    // next run dies instantly with no explanation.
+    model_loader::cancel::clear();
+    ui::commands::start_run(bg_state, manifest_path, run_dir.clone())
         }));
 
         match result {
@@ -1160,20 +1366,44 @@ fn cmd_install_llama(app: AppHandle) -> Result<String, String> {
         .map(|s| s.success())
         .unwrap_or(false);
 
-    // Pick release asset name pattern
-    let (asset_keyword, fallback_keyword) = if has_nvidia {
-        ("bin-win-cuda-12.4-x64", "bin-win-cpu-x64")
+    // Pick release asset name pattern.
+    //
+    // Upstream names assets per platform:
+    //   Windows  llama-<build>-bin-win-<backend>-x64.zip
+    //   Linux    llama-<build>-bin-ubuntu-<backend>-x64.tar.gz
+    //
+    // There is NO prebuilt CUDA build for Ubuntu — verified against release
+    // b10237, whose ubuntu assets are plain / vulkan / rocm / sycl / openvino
+    // only. So an NVIDIA GPU on Linux takes the VULKAN build, which is the
+    // portable GPU backend upstream actually publishes there.
+    #[cfg(target_os = "windows")]
+    let (asset_keyword, fallback_keyword, archive_ext) = if has_nvidia {
+        ("bin-win-cuda-12.4-x64", "bin-win-cpu-x64", ".zip")
     } else {
-        ("bin-win-cpu-x64", "bin-win-cpu-x64")
+        ("bin-win-cpu-x64", "bin-win-cpu-x64", ".zip")
+    };
+    #[cfg(not(target_os = "windows"))]
+    let (asset_keyword, fallback_keyword, archive_ext) = if has_nvidia {
+        ("bin-ubuntu-vulkan-x64", "bin-ubuntu-x64", ".tar.gz")
+    } else {
+        ("bin-ubuntu-x64", "bin-ubuntu-x64", ".tar.gz")
     };
 
     app.emit("llama-install-progress", serde_json::json!({
         "percent": 10, "message": "Querying latest llama.cpp release…"
     })).ok();
 
-    // Fetch latest release info from GitHub API
+    // Fetch latest release info from GitHub API.
+    //
+    // Two agents deliberately. The 30s budget is right for a JSON API call and
+    // hopeless for the archive, which is hundreds of megabytes — sharing one
+    // agent is what produced "read llama.cpp failed: timed out reading
+    // response" on a perfectly healthy connection.
     let agent = ureq::AgentBuilder::new()
         .timeout(std::time::Duration::from_secs(30))
+        .build();
+    let dl_agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(600))
         .build();
 
     let release: serde_json::Value = agent
@@ -1193,7 +1423,7 @@ fn cmd_install_llama(app: AppHandle) -> Result<String, String> {
         assets.iter().find_map(|a| {
             let name = a["name"].as_str().unwrap_or("");
             let url = a["browser_download_url"].as_str().unwrap_or("");
-            if name.contains(keyword) && name.starts_with("llama-") && name.ends_with(".zip") {
+            if name.contains(keyword) && name.starts_with("llama-") && name.ends_with(archive_ext) {
                 Some((name.to_string(), url.to_string()))
             } else {
                 None
@@ -1206,6 +1436,10 @@ fn cmd_install_llama(app: AppHandle) -> Result<String, String> {
         .ok_or("could not find a suitable llama.cpp release asset")?;
 
     // Also grab cudart if using CUDA
+    #[cfg(not(target_os = "windows"))]
+    let cudart_url: Option<String> = None;   // Windows-only asset: CUDA runtime DLLs
+
+    #[cfg(target_os = "windows")]
     let cudart_url = if has_nvidia {
         assets.iter().find_map(|a| {
             let name = a["name"].as_str().unwrap_or("");
@@ -1226,7 +1460,7 @@ fn cmd_install_llama(app: AppHandle) -> Result<String, String> {
 
     // Download and extract helper
     let download_and_extract = |url: &str, label: &str| -> Result<(), String> {
-        let resp = agent.get(url)
+        let resp = dl_agent.get(url)
             .call()
             .map_err(|e| format!("download {} failed: {}", label, e))?;
 
@@ -1235,36 +1469,90 @@ fn cmd_install_llama(app: AppHandle) -> Result<String, String> {
             .read_to_end(&mut bytes)
             .map_err(|e| format!("read {} failed: {}", label, e))?;
 
-        let cursor = std::io::Cursor::new(&bytes);
-        let mut archive = zip::ZipArchive::new(cursor)
-            .map_err(|e| format!("zip open {} failed: {}", label, e))?;
+        // Windows ships .zip, Linux .tar.gz. Both are FLATTENED into
+        // install_dir: the Linux tarball nests everything under build/bin/, and
+        // the binaries locate their shared objects via RUNPATH=$ORIGIN, so they
+        // must end up adjacent — which is the layout the Windows zips already
+        // have.
+        #[cfg(target_os = "windows")]
+        {
+            let cursor = std::io::Cursor::new(&bytes);
+            let mut archive = zip::ZipArchive::new(cursor)
+                .map_err(|e| format!("zip open {} failed: {}", label, e))?;
 
-        for i in 0..archive.len() {
-            let mut file = archive.by_index(i)
-                .map_err(|e| format!("zip entry error: {}", e))?;
-            let name = file.name().to_string();
+            for i in 0..archive.len() {
+                let mut file = archive.by_index(i)
+                    .map_err(|e| format!("zip entry error: {}", e))?;
+                let name = file.name().to_string();
+                if name.ends_with('/') { continue; }
 
-            // Skip directories
-            if name.ends_with('/') {
-                continue;
+                let file_name = std::path::Path::new(&name)
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned();
+                if file_name.is_empty() { continue; }
+
+                let out_path = install_dir.join(&file_name);
+                let mut out_file = std::fs::File::create(&out_path)
+                    .map_err(|e| format!("create file {} failed: {}", file_name, e))?;
+                std::io::copy(&mut file, &mut out_file)
+                    .map_err(|e| format!("extract {} failed: {}", file_name, e))?;
             }
+        }
 
-            // Flatten: extract just the filename into install_dir
-            let file_name = std::path::Path::new(&name)
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned();
+        #[cfg(not(target_os = "windows"))]
+        {
+            let dec = flate2::read::GzDecoder::new(std::io::Cursor::new(&bytes));
+            let mut archive = tar::Archive::new(dec);
+            archive.set_preserve_permissions(true);
 
-            if file_name.is_empty() {
-                continue;
+            for entry in archive.entries()
+                .map_err(|e| format!("tar open {} failed: {}", label, e))?
+            {
+                let mut entry = entry.map_err(|e| format!("tar entry error: {}", e))?;
+                let entry_type = entry.header().entry_type();
+                let path = entry.path()
+                    .map_err(|e| format!("tar path error: {}", e))?
+                    .into_owned();
+                let file_name = match path.file_name() {
+                    Some(f) if !f.is_empty() => f.to_owned(),
+                    _ => continue,
+                };
+                let out_path = install_dir.join(&file_name);
+
+                // SONAME symlinks are load-bearing. The tarball ships
+                // libggml-base.so.0 -> libggml-base.so.0.18.0 and friends, and
+                // binaries record DT_NEEDED by SONAME — drop the links and every
+                // executable dies at startup with "error while loading shared
+                // libraries", even though the real file is sitting right there.
+                // Retargeted to the basename because this tree is flattened.
+                if entry_type.is_symlink() || entry_type.is_hard_link() {
+                    let target = entry.link_name()
+                        .map_err(|e| format!("tar link error: {}", e))?
+                        .ok_or_else(|| format!("link {} has no target",
+                                               file_name.to_string_lossy()))?;
+                    let target_name = match target.file_name() {
+                        Some(t) if !t.is_empty() => t.to_owned(),
+                        _ => continue,
+                    };
+                    let _ = std::fs::remove_file(&out_path);
+                    std::os::unix::fs::symlink(&target_name, &out_path)
+                        .map_err(|e| format!("link {} failed: {}",
+                                             file_name.to_string_lossy(), e))?;
+                    continue;
+                }
+
+                if !entry_type.is_file() { continue; }
+
+                // unpack() applies the mode from the tar header — without the
+                // executable bit the install "succeeds" and then every run fails
+                // with Permission denied.
+                let _ = std::fs::remove_file(&out_path);
+                entry.unpack(&out_path)
+                    .map_err(|e| format!("extract {} failed: {}",
+                                         file_name.to_string_lossy(), e))?;
             }
-
-            let out_path = install_dir.join(&file_name);
-            let mut out_file = std::fs::File::create(&out_path)
-                .map_err(|e| format!("create file {} failed: {}", file_name, e))?;
-            std::io::copy(&mut file, &mut out_file)
-                .map_err(|e| format!("extract {} failed: {}", file_name, e))?;
         }
 
         Ok(())
@@ -1306,6 +1594,32 @@ fn main() {
     tauri::Builder::default()
         .manage(new_shared_state())
         .manage(cancel_flag)
+        // Window-event tracing. There was no window-event handler at all, which
+        // is why "the ✕ does nothing" could not be diagnosed: nothing recorded
+        // whether the click ever reached the app. This separates the two
+        // possibilities outright — if CloseRequested is logged, the click
+        // arrives and something downstream ignores it; if nothing is logged,
+        // the click never reaches the toolkit and the problem is below Tauri
+        // (compositor, GTK, or a stray always-on-top surface).
+        .on_window_event(|window, event| {
+            let label = window.label();
+            match event {
+                tauri::WindowEvent::CloseRequested { .. } => {
+                    eprintln!("[window:{}] CloseRequested", label)
+                }
+                tauri::WindowEvent::Destroyed => eprintln!("[window:{}] Destroyed", label),
+                tauri::WindowEvent::Focused(focused) => {
+                    eprintln!("[window:{}] Focused({})", label, focused)
+                }
+                tauri::WindowEvent::Resized(size) => {
+                    eprintln!("[window:{}] Resized({}x{})", label, size.width, size.height)
+                }
+                tauri::WindowEvent::Moved(pos) => {
+                    eprintln!("[window:{}] Moved({},{})", label, pos.x, pos.y)
+                }
+                _ => {}
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             startup_scan,
             cmd_load_pdf,
@@ -1319,10 +1633,15 @@ fn main() {
             cmd_retry_model_download,
             cmd_cancel_model_download,
             cmd_get_model_library_path,
+            cmd_browse_model_library,
+            cmd_reset_model_library,
+            cmd_set_model_library,
+            cmd_model_library_info,
             cmd_open_model_library,
             cmd_open_output_folder,
             cmd_list_model_library,
             cmd_list_library_subfolders,
+            cmd_ctx_vram_profile,
             cmd_download_hf_model,
             cmd_list_partial_downloads,
             cmd_delete_partial_download,
