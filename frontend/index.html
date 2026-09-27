@@ -1314,6 +1314,21 @@
             done: p.percent >= 100
           };
 
+          // Terminated by the operator: not an error. Stop the spinner and
+          // offer the run folder (partial output stays on disk) and the way back.
+          if (p.message && p.message.indexOf('Run terminated') === 0) {
+            setRunActive(false);
+            runState = null;
+            procBrain.classList.remove('throb');
+            procSpinner.style.display = 'none';
+            procLabel.textContent = p.message;
+            procComplete.classList.remove('hidden');
+            procComplete.firstElementChild.textContent = 'Run Terminated';
+            runOutputPath = p.output_path || '';
+            procDonePath.textContent = runOutputPath ? 'Run folder: ' + runOutputPath : '';
+            return;
+          }
+
           // Error state: percent 0 with an error/crash message → stop run
           if (pct_val === 0 && p.message && (p.message.indexOf('error') !== -1 || p.message.indexOf('crash') !== -1 || p.message.indexOf('Pipeline') !== -1)) {
             setRunActive(false);
@@ -1347,6 +1362,7 @@
             procBrain.classList.remove('throb');
             procSpinner.style.display = 'none';
             procLabel.textContent = '';
+            procComplete.firstElementChild.textContent = 'Report Complete';
             procComplete.classList.remove('hidden');
             if (p.output_path) {
               runOutputPath = p.output_path;

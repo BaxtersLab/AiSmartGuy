@@ -14,6 +14,8 @@ pub enum OrchestratorError {
     OptimizationError(String),
     IoError(String),
     InvalidState(String),
+    /// The operator terminated the run (Terminate Run). Not a failure.
+    Cancelled,
 }
 
 impl fmt::Display for OrchestratorError {
@@ -29,6 +31,7 @@ impl fmt::Display for OrchestratorError {
             OrchestratorError::OptimizationError(m) => write!(f, "OptimizationError: {}", m),
             OrchestratorError::IoError(m) => write!(f, "IoError: {}", m),
             OrchestratorError::InvalidState(m) => write!(f, "InvalidState: {}", m),
+            OrchestratorError::Cancelled => write!(f, "Cancelled: the run was terminated"),
         }
     }
 }

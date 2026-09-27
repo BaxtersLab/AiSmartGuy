@@ -1180,6 +1180,16 @@ fn cmd_begin_run(
                     output_path: Some(run_dir_str),
                 }).ok();
             }
+            // Terminate Run: say so, and point at what was already written.
+            Ok(Err(ui::errors::UiError::Cancelled)) => {
+                orchestrator::clear_progress_callback();
+                model_loader::clear_log_callback();
+                bg_app.emit("run-progress", RunProgress {
+                    percent: 0.0,
+                    message: "Run terminated. Anything already written is in the run folder.".into(),
+                    output_path: Some(run_dir.to_string_lossy().into_owned()),
+                }).ok();
+            }
             Ok(Err(e)) => {
                 orchestrator::clear_progress_callback();
                 model_loader::clear_log_callback();

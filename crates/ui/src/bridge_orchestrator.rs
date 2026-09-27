@@ -13,9 +13,10 @@ pub fn run_orchestrator(
     let mut orchestrator = Orchestrator::new(manifest_path, run_dir)
         .map_err(|e| UiError::OrchestratorError(format!("{:?}", e)))?;
 
-    let output_path = orchestrator
-        .run(pdf_path)
-        .map_err(|e| UiError::OrchestratorError(format!("{:?}", e)))?;
+    let output_path = orchestrator.run(pdf_path).map_err(|e| match e {
+        orchestrator::OrchestratorError::Cancelled => UiError::Cancelled,
+        e => UiError::OrchestratorError(format!("{:?}", e)),
+    })?;
 
     Ok(output_path)
 }

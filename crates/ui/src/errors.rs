@@ -11,6 +11,8 @@ pub enum UiError {
     OrchestratorError(String),
     ConflictError(String),
     ModelFetchError(String),
+    /// The operator terminated the run. Not a failure.
+    Cancelled,
 }
 
 impl fmt::Display for UiError {
@@ -22,6 +24,7 @@ impl fmt::Display for UiError {
             UiError::OrchestratorError(m) => write!(f, "OrchestratorError: {}", m),
             UiError::ConflictError(m) => write!(f, "ConflictError: {}", m),
             UiError::ModelFetchError(m) => write!(f, "ModelFetchError: {}", m),
+            UiError::Cancelled => write!(f, "Cancelled: the run was terminated"),
         }
     }
 }

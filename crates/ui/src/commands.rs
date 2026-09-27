@@ -131,6 +131,13 @@ pub fn start_run(
             s.stage = UiStage::Completed;
             Ok(())
         }
+        // Terminated by the operator: back to idle, with no error recorded.
+        Err(UiError::Cancelled) => {
+            let mut s = state.lock().unwrap();
+            s.run_in_progress = false;
+            s.stage = UiStage::Idle;
+            Err(UiError::Cancelled)
+        }
         Err(e) => {
             let msg = format!("{:?}", e);
             emit_error(&msg);

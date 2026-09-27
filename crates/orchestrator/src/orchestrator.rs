@@ -489,6 +489,13 @@ impl Orchestrator {
                     );
 
                     if let Err(e) = state_bridge::infer(&mut instance, &request) {
+                        // Terminate Run: stop here. Not a failure to retry, and
+                        // nothing after it may start (it used to "retry in 3s",
+                        // and the run then reported "All models failed").
+                        if model_loader::cancel::is_requested() {
+                            let _ = state_bridge::unload(&mut instance);
+                            return Err(OrchestratorError::Cancelled);
+                        }
                         // If the GPU could not take the model, retry on the CPU and keep
                         // it there for the rest of this model's passes: a run that
                         // cannot use the GPU should be slow, not impossible. The cause
@@ -638,6 +645,11 @@ impl Orchestrator {
 
                 match run_fusion(fusion_config, &fusion_input, &self.run_dir, self.manifest.resource_throttle.throttle_pct) {
                     Ok(path) => Some(path),
+                    // Terminated during the fold: not a finished report
+                    // without its synthesis.
+                    Err(_) if model_loader::cancel::is_requested() => {
+                        return Err(OrchestratorError::Cancelled);
+                    }
                     Err(e) => {
                         eprintln!("[orchestrator][WARN] fusion failed: {}", e);
                         None
