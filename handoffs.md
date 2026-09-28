@@ -2,6 +2,24 @@
 
 _Append-only (Article VIII). Newest entry at the top._
 
+## [2026-09-28] — ASG-Q5: only direct links to pinned files are installed
+
+The supervisor approved my reading of "reject links", with two tightenings:
+a pinned link targets a bare file name, and that target is a pinned regular
+file (no dangling link, no link to a link).
+
+- **`9ca17cf`:** `pin_is_sound()` enforces both, on the real table (a
+  test) and before any download (a refusal).
+- **The real archives chain five unversioned development links**
+  (`libllama.so -> libllama.so.0 -> libllama.so.0.0.10238`, and the same
+  for ggml, ggml-base, llama-common and mtmd). Nothing in the release loads
+  those names: no NEEDED entry in any ELF file, and no dlopen string. They
+  are pinned as `DevLink`: checked against their pinned target in the
+  archive, and never installed.
+- A real install is 57 (cpu) or 58 (vulkan) entries, and both builds ran
+  inference in a scratch test.
+- 6 mutants, all killed. **Gate:** 284 passed, 284 listed.
+
 ## [2026-09-28] — Four defects the supervisor listed, fixed before close
 
 The supervisor's 20:47 entry turned four of my "seen, not changed" notes
