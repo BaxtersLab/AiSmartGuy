@@ -2,6 +2,49 @@
 
 _Append-only (Article VIII). Newest entry at the top._
 
+## [2026-09-28] — ASG-Q3: every quote is checked against the chapter it cites
+
+The manager ruled (a), and the supervisor's reading fixed the details. It
+applies in structured-findings mode (`ASG_STRUCTURED_FINDINGS=1`). Three
+commits:
+- **`c57cd41`**: the report PDF drew `\(` for every parenthesis, and dropped
+  curly quotes and dashes (no font encoding). Text is now WinAnsi, and lopdf
+  alone escapes it.
+- **`2b8b40a`**: `Chapter::body()`, the chapter without the preamble carried
+  from the previous section.
+- **`cd80cbf`**: the check itself.
+  - `quote_check.rs`: NFKC, full case folding, invisibles removed, quote
+    marks mapped, whitespace collapsed, trimmed; exact match only.
+  - Each quote is labelled "Quote verified in chapter" or "Quote not found
+    in chapter", and a verified one gets character offsets into the
+    original chapter text.
+  - Unverified findings stay as "unsupported model inferences". They are
+    excluded from counts, severity, exemplars and scores, and kept out of
+    the synthesis input.
+  - "Quotes verified: X of Y" heads the table and the report.
+
+**Tests:** 284 → 313 in the workspace (fresh clone, listed = passed). 39 mutants, all killed; one survived
+at first (the leading trim) and got its test. A whole-run test drives the
+GUI's `start_run` with llama as a test double, with and without a
+synthesis.
+
+**On real output** (two saved Phase 2 runs over the *Common Sense* excerpt):
+- Hermes-7B: 2 of 26 quotes verified.
+- Qwen-1.5B: 0 of 10.
+- An independent Python implementation of the normalisation agrees on all
+  36 verdicts.
+- Two of Hermes' unverified quotes are the book's words plus a period the
+  model added where the book's sentence continues. The ruling has no
+  punctuation rule, so they stay unverified.
+
+**Limits, stated:**
+- Prose mode, the default, has no structured quotes, so nothing is checked
+  there.
+- The report font draws WinAnsi only: Greek, Cyrillic or CJK text prints as
+  `?`.
+- Case folding is Unicode 16.0 while NFKC is 17.0. `findings.json` records
+  both versions.
+
 ## [2026-09-28] — ASG-Q5: only direct links to pinned files are installed
 
 The supervisor approved my reading of "reject links", with two tightenings:
