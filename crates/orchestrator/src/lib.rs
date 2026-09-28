@@ -13,6 +13,8 @@ pub mod state_bridge;
 pub mod bridge_model_fetcher;
 pub mod fusion;
 pub mod findings;
+pub mod quote_check;
+mod casefold_table;
 pub mod optimization_bridge;
 pub mod orchestrator;
 

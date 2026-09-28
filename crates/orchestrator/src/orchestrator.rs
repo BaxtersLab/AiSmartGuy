@@ -8,7 +8,7 @@ use crate::bridge_model_fetcher::ensure_model_ready;
 use crate::errors::{OrchestratorError, OrchestratorResult};
 use crate::fusion::run_fusion;
 use crate::manifest_bridge::{load_manifest, save_manifest, validate_manifest};
-use crate::optimization_bridge::run_optimization_pass;
+use crate::optimization_bridge::{run_optimization_pass, FindingsScoring};
 use crate::pdf_bridge::{chapter_split, extract_pdf, write_final_pdf};
 use crate::progress::emit_progress;
 use crate::rag_bridge::{load_merged_packets, model_rag_dir};
@@ -591,6 +591,38 @@ impl Orchestrator {
             return Err(OrchestratorError::InferenceFailed(msg));
         }
 
+        // ── Findings: merged once, every quote checked (ASG-Q3) ─────────────
+        // In structured-findings mode every quote is checked against the
+        // chapter it cites. The one checked merge feeds the synthesis, the
+        // scores and the report, and is written to the run dir whether or not
+        // a synthesis model runs.
+        let sources = quote_sources(&chapters);
+        let checked: Option<crate::findings::MergeResult> = if findings_grammar.is_some() {
+            let merged = crate::findings::merge_findings(
+                &findings_merge_inputs(&chapter_outputs),
+                &sources,
+            );
+            let _ = std::fs::write(
+                self.run_dir.join("findings_table.md"),
+                crate::findings::render_findings_table(&merged.aggregate),
+            );
+            let _ = std::fs::write(
+                self.run_dir.join("findings.json"),
+                crate::findings::render_findings_json(&merged.aggregate),
+            );
+            eprintln!(
+                "[orchestrator] findings merge: {} finding(s), {} rule(s), {} chapter(s) parsed, {} fell back to prose; {}",
+                merged.aggregate.total_findings,
+                merged.aggregate.rules.len(),
+                merged.aggregate.chapters_parsed,
+                merged.parse_failures.len(),
+                merged.aggregate.quotes_header()
+            );
+            Some(merged)
+        } else {
+            None
+        };
+
         // ── Step 5: Fusion ──────────────────────────────────────────────────
         let fusion_output_path = if let Some(fusion_config) = &self.manifest.models.fusion.clone() {
             if fusion_config.active && model_outputs.len() > 0 {
@@ -600,32 +632,17 @@ impl Orchestrator {
                 // Build the fusion input. In structured-findings mode this is the
                 // LOSSLESSLY-merged findings table (one compact synthesis pass —
                 // the Phase 2 context-ceiling fix); otherwise it's the raw
-                // per-chapter prose (the existing hierarchical fold).
-                let fusion_input = if findings_grammar.is_some() {
-                    // Collect every chapter's output labeled by model+chapter.
-                    let chapters = findings_merge_inputs(&chapter_outputs);
-                    let merged = crate::findings::merge_findings(&chapters);
-
-                    // Persist the lossless artifacts to the run dir.
-                    let table = crate::findings::render_findings_table(&merged.aggregate);
-                    let _ = std::fs::write(self.run_dir.join("findings_table.md"), &table);
-                    let _ = std::fs::write(
-                        self.run_dir.join("findings.json"),
-                        crate::findings::render_findings_json(&merged.aggregate),
-                    );
-                    eprintln!(
-                        "[orchestrator] findings merge: {} finding(s), {} rule(s), {} chapter(s) parsed, {} fell back to prose",
-                        merged.aggregate.total_findings,
-                        merged.aggregate.rules.len(),
-                        merged.aggregate.chapters_parsed,
-                        merged.parse_failures.len()
-                    );
-
+                // per-chapter prose (the existing hierarchical fold). The table
+                // given to the synthesis leaves out unsupported claimed quotes.
+                let fusion_input = if let Some(merged) = &checked {
                     // Synthesis input: the compact table as one block, plus any
                     // unparsed analyses as extra blocks so nothing is dropped.
-                    let mut blocks = vec![("Findings table".to_string(), table)];
-                    for (label, prose) in merged.parse_failures {
-                        blocks.push((format!("Unparsed analysis of {label}"), prose));
+                    let mut blocks = vec![(
+                        "Findings table".to_string(),
+                        crate::findings::render_synthesis_table(&merged.aggregate),
+                    )];
+                    for (label, prose) in &merged.parse_failures {
+                        blocks.push((format!("Unparsed analysis of {label}"), prose.clone()));
                     }
                     FusionInput { blocks }
                 } else {
@@ -668,11 +685,16 @@ impl Orchestrator {
             None
         };
 
+        let scoring = rule_category_map.as_ref().map(|rule_category| FindingsScoring {
+            rule_category,
+            outputs: &chapter_outputs,
+            sources: &sources,
+        });
         if let Err(e) = run_optimization_pass(
             &mut self.manifest,
             &model_outputs,
             &mut self.score_history,
-            rule_category_map.as_ref(),
+            scoring.as_ref(),
         ) {
             eprintln!("[orchestrator][WARN] optimization pass failed: {}", e);
             // Non-fatal: the run still produces output.
@@ -697,11 +719,20 @@ impl Orchestrator {
         self.state = OrchestratorState::WritingFinalPdf;
         self.emit("WRITING_FINAL_PDF", "writing final PDF", 0.96);
 
-        let results_text = fusion_output_path
+        let synthesis = fusion_output_path
             .as_ref()
             .and_then(|p| std::fs::read_to_string(p).ok())
-            .filter(|t| !t.trim().is_empty())
-            .unwrap_or_else(|| {
+            .filter(|t| !t.trim().is_empty());
+        let results_text = match (synthesis, &checked) {
+            // The quote count heads the report (ASG-Q3).
+            (Some(text), Some(merged)) => {
+                format!("{}\n\n{}", merged.aggregate.quotes_header(), text)
+            }
+            (Some(text), None) => text,
+            // No synthesis in findings mode: the checked table is the report,
+            // never the raw findings JSON, whose quotes carry no label.
+            (None, Some(merged)) => report_from_checked_findings(merged),
+            (None, None) => {
                 // No fusion output — aggregate individual model chunk outputs.
                 let titles: Vec<String> = chapters
                     .iter()
@@ -718,7 +749,8 @@ impl Orchestrator {
                 } else {
                     combined
                 }
-            });
+            }
+        };
 
         let manifest_json = manifest::serialize(&self.manifest)
             .map_err(|e| OrchestratorError::ManifestError(format!("{:?}", e)))?;
@@ -780,19 +812,39 @@ type ChapterOutputs = HashMap<String, Vec<(usize, PathBuf)>>;
 
 /// Every output read back for the findings merge, labelled with its model and
 /// the chapter it analysed. Passes over the same chapter share a label.
-fn findings_merge_inputs(outputs: &ChapterOutputs) -> Vec<(String, String)> {
+fn findings_merge_inputs(outputs: &ChapterOutputs) -> Vec<(usize, String)> {
     let mut names: Vec<&String> = outputs.keys().collect();
     names.sort();
     let mut chapters = Vec::new();
     for name in names {
         for (ch, path) in &outputs[name] {
             let text = std::fs::read_to_string(path).unwrap_or_default();
-            // The label reaches the model (the findings table's locations):
-            // the chapter only, never the lane.
-            chapters.push((format!("chapter {}", ch + 1), text));
+            // The chapter index only, never the lane: the merge labels it
+            // "chapter N", and that label reaches the model.
+            chapters.push((*ch, text));
         }
     }
     chapters
+}
+
+/// The text each chapter's quotes are checked against: the chapter's own
+/// text, never the preamble carried from the previous section. A quote the
+/// model took from the preamble belongs to the chapter before.
+fn quote_sources(chapters: &[pdf_io::Chapter]) -> Vec<&str> {
+    chapters.iter().map(|c| c.body()).collect()
+}
+
+/// The report body when findings were merged but no synthesis ran: the
+/// checked table, then any analyses that did not parse as findings.
+fn report_from_checked_findings(merged: &crate::findings::MergeResult) -> String {
+    let mut text = crate::findings::render_findings_table(&merged.aggregate);
+    for (label, prose) in &merged.parse_failures {
+        let cleaned = strip_llama_noise(prose);
+        if !cleaned.trim().is_empty() {
+            text.push_str(&format!("\n## Unparsed analysis of {label}\n\n{}\n", cleaned.trim()));
+        }
+    }
+    text
 }
 
 /// The prose fold's blocks: every analysis, ordered by chapter (then lane,
@@ -1141,9 +1193,42 @@ mod multi_pass_label_tests {
     #[test]
     fn findings_labels_name_the_chapter_not_the_output_position() {
         let (dir, outputs) = write_outputs("findings", &TWO_BY_TWO);
-        let labels: Vec<String> = findings_merge_inputs(&outputs).into_iter().map(|(l, _)| l).collect();
+        let inputs = findings_merge_inputs(&outputs);
         let _ = std::fs::remove_dir_all(&dir);
+        let indices: Vec<usize> = inputs.iter().map(|(ch, _)| *ch).collect();
+        assert_eq!(indices, [0, 0, 1, 1]);
+        // The merge turns the index into the label the model sees. These
+        // outputs are prose, so the labels come back on the parse failures.
+        let labels: Vec<String> = crate::findings::merge_findings(&inputs, &[])
+            .parse_failures
+            .into_iter()
+            .map(|(l, _)| l)
+            .collect();
         assert_eq!(labels, ["chapter 1", "chapter 1", "chapter 2", "chapter 2"]);
+    }
+
+    /// A quote from the preamble carried into chapter 2 is chapter 1's text:
+    /// cited as chapter 2 it is not found, cited as chapter 1 it verifies.
+    #[test]
+    fn quotes_are_checked_against_the_chapter_without_its_preamble() {
+        let pdf = pdf_io::ExtractedPdf {
+            pages: vec![
+                "Chapter 1 First\n\nThe first chapter ends: remember the keyword BANANA.".into(),
+                "Chapter 2 Second\n\nThe second chapter continues elsewhere.".into(),
+            ],
+            page_count: 2,
+        };
+        let chapters = pdf_io::split_into_chapters(&pdf, 500000, 100);
+        assert_eq!(chapters.len(), 2);
+        assert!(chapters[1].text.contains("remember the keyword BANANA"), "premise: the preamble carries it");
+        let sources = quote_sources(&chapters);
+        let finding = r#"[{"rule_id":"F-01","quote":"remember the keyword BANANA","location":"p","severity":"low","note":"n"}]"#;
+        let merged = crate::findings::merge_findings(
+            &[(1, finding.to_string()), (0, finding.to_string())],
+            &sources,
+        );
+        let checks: Vec<bool> = merged.aggregate.findings.iter().map(|f| f.check.is_verified()).collect();
+        assert_eq!(checks, [false, true], "chapter 2 (its preamble) no, chapter 1 yes");
     }
 
     /// The fold's headings: the chapter each output analysed (not its

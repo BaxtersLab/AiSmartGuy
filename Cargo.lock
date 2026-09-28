@@ -2671,6 +2671,7 @@ dependencies = [
  "rag_engine",
  "serde",
  "serde_json",
+ "unicode-normalization",
  "utils",
 ]
 
