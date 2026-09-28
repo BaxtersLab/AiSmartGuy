@@ -557,20 +557,10 @@
               llamaInstalled = true;
               console.log('[llama] detected: ' + path);
             } else {
-              console.log('[llama] not found — will install when first run is triggered');
+              console.log('[llama] not found — a run will offer the pinned download (or: sudo apt install llama.cpp-tools)');
             }
           })
           .catch(function () {});
-      }
-
-      function installLlama() {
-        if (!window.__TAURI__ || !window.__TAURI__.core) return;
-        return window.__TAURI__.core.invoke('cmd_install_llama')
-          .then(function (path) {
-            llamaInstalled = true;
-            console.log('[llama] installed: ' + path);
-            return path;
-          });
       }
 
       // Detect-only on startup (no GPU queries, no downloads)
@@ -1277,37 +1267,21 @@
           if (!p) return;
           var pct_val = Math.round(p.percent);
 
-          // If the pipeline reports llama not installed, auto-install and retry
+          // llama.cpp is not installed. Nothing is downloaded unless the user
+          // confirms the exact pinned build shown (manager's ruling on ASG-Q2):
+          // tag, asset, backend and size come from the app's own table.
           if (p.message && p.message.indexOf('LLAMA_NOT_INSTALLED') !== -1) {
-            procLabel.textContent = 'Installing llama.cpp inference engine…';
-            procFill.style.width = '10%';
-            procPct.textContent = '10%';
-            if (window.__TAURI__.core) {
-              window.__TAURI__.core.invoke('cmd_install_llama')
-                .then(function () {
-                  llamaInstalled = true;
-                  procLabel.textContent = 'llama.cpp installed — restarting run…';
-                  // Re-trigger the run
-                  window.__TAURI__.core.invoke('cmd_begin_run', {
-                    mode:  currentMode,
-                    lane2: mlSelect2.value,
-                    lane3: mlSelect3.value || '',
-                    lane4: mlSelect4.value || '',
-                    lane5: mlSelect5.value || '',
-                    throttlePct: parseInt(advThrottleSlider.value, 10) || 75,
-                    ctxSize: getSelectedCtxSize()
-                  }).catch(function (err2) {
-                    setRunActive(false);
-                    runState = null;
-                    showError2('Retry failed: ' + err2);
-                  });
-                })
-                .catch(function (err) {
-                  setRunActive(false);
-                  runState = null;
-                  showError2('llama.cpp install failed: ' + err);
-                });
-            }
+            setRunActive(false);
+            runState = null;
+            procBrain.classList.remove('throb');
+            procSpinner.style.display = 'none';
+            if (!window.__TAURI__.core) return;
+            window.__TAURI__.core.invoke('cmd_llama_install_plan')
+              .then(showLlamaConfirm)
+              .catch(function (err) {
+                showError2('llama.cpp is not installed, and no verified build is pinned for this ' +
+                           'computer (' + err + '). Install it with: sudo apt install llama.cpp-tools');
+              });
             return;
           }
 
@@ -1377,6 +1351,82 @@
             mlStartRunBtn.textContent = 'View Results';
             mlStartRunBtn.classList.remove('run-active');
           }
+        });
+      }
+
+      // ── llama.cpp download: shown, confirmed, verified ─────────
+      // The one place the app downloads llama.cpp. The backend refuses any
+      // asset other than the one this panel showed.
+      function showLlamaConfirm(plan) {
+        var old = document.getElementById('llamaConfirm');
+        if (old) old.remove();
+        procLabel.textContent = 'llama.cpp is not installed';
+        var box = document.createElement('div');
+        box.id = 'llamaConfirm';
+        box.style.cssText = 'max-width:640px;margin:16px auto;padding:16px 20px;border:1px solid #c9c2b4;' +
+                            'border-radius:8px;background:#fbf8f2;text-align:left;font-size:14px;';
+        function line(tag, text, bold) {
+          var el = document.createElement(tag);
+          el.textContent = text;
+          if (bold) el.style.fontWeight = '600';
+          el.style.margin = '4px 0';
+          box.appendChild(el);
+        }
+        var mb = (plan.bytes / 1e6).toFixed(1) + ' MB';
+        line('p', 'AiSmartGuy can download this pinned, verified build of llama.cpp:', true);
+        line('p', 'Release tag: ' + plan.tag);
+        line('p', 'Asset: ' + plan.asset);
+        line('p', 'Backend: ' + plan.backend);
+        line('p', 'Size: ' + mb + ' (checked, with its SHA-256, before anything is unpacked)');
+        line('p', 'From: ' + plan.url);
+        line('p', 'Or install your distribution\'s instead: sudo apt install llama.cpp-tools');
+        var go = document.createElement('button');
+        go.id = 'llamaConfirmGo';
+        go.textContent = 'Download and install (' + mb + ')';
+        var no = document.createElement('button');
+        no.id = 'llamaConfirmCancel';
+        no.textContent = 'Cancel';
+        [go, no].forEach(function (b) { b.style.margin = '10px 8px 0 0'; box.appendChild(b); });
+        no.addEventListener('click', function () {
+          box.remove();
+          showModelLoader();
+        });
+        go.addEventListener('click', function () {
+          go.disabled = true;
+          no.disabled = true;
+          procLabel.textContent = 'Downloading llama.cpp ' + plan.tag + '…';
+          window.__TAURI__.core.invoke('cmd_install_llama', { asset: plan.asset })
+            .then(function () {
+              llamaInstalled = true;
+              box.remove();
+              procLabel.textContent = 'llama.cpp installed and verified — restarting run…';
+              return window.__TAURI__.core.invoke('cmd_begin_run', {
+                mode:  currentMode,
+                lane2: mlSelect2.value,
+                lane3: mlSelect3.value || '',
+                lane4: mlSelect4.value || '',
+                lane5: mlSelect5.value || '',
+                throttlePct: parseInt(advThrottleSlider.value, 10) || 75,
+                ctxSize: getSelectedCtxSize()
+              });
+            })
+            .catch(function (err) {
+              box.remove();
+              setRunActive(false);
+              runState = null;
+              showError2('llama.cpp was not installed: ' + err);
+            });
+        });
+        processingScreen.appendChild(box);
+      }
+
+      if (window.__TAURI__ && window.__TAURI__.event) {
+        window.__TAURI__.event.listen('llama-install-progress', function (event) {
+          var p = event.payload;
+          if (!p) return;
+          procLabel.textContent = p.message || '';
+          procFill.style.width = Math.round(p.percent || 0) + '%';
+          procPct.textContent = Math.round(p.percent || 0) + '%';
         });
       }
 

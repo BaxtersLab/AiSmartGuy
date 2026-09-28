@@ -12,6 +12,8 @@ use model_loader::gpu_mapper;
 use ui::state::{new_shared_state, SharedUiState};
 use ui::types::UiConflict;
 
+mod llama_install;
+
 // ── Cancel flag managed state ────────────────────────────────────────────────
 struct CancelFlag(Arc<AtomicBool>);
 
@@ -1242,294 +1244,68 @@ fn cmd_detect_llama() -> String {
     }
 }
 
-/// Download and install llama.cpp into ~/.aismartguy/llama-cpp/.
-/// Picks CUDA 12.4 build if nvidia-smi works, otherwise CPU build.
-/// Emits "llama-install-progress" events.
-/// Release-asset name pattern for this platform: `(preferred keyword,
-/// fallback keyword, archive extension)`.
-///
-/// Upstream names assets per platform:
-///   Windows  llama-<build>-bin-win-<backend>-x64.zip
-///   Linux    llama-<build>-bin-ubuntu-<backend>-x64.tar.gz
-///
-/// There is NO prebuilt CUDA build for Ubuntu — verified against release
-/// b10237, whose ubuntu assets are plain / vulkan / rocm / sycl / openvino
-/// only. So an NVIDIA GPU on Linux takes the VULKAN build, which is the
-/// portable GPU backend upstream actually publishes there.
-fn llama_asset_pattern(has_nvidia: bool) -> (&'static str, &'static str, &'static str) {
-    #[cfg(target_os = "windows")]
-    let pattern = if has_nvidia {
-        ("bin-win-cuda-12.4-x64", "bin-win-cpu-x64", ".zip")
-    } else {
-        ("bin-win-cpu-x64", "bin-win-cpu-x64", ".zip")
-    };
-    #[cfg(not(target_os = "windows"))]
-    let pattern = if has_nvidia {
-        ("bin-ubuntu-vulkan-x64", "bin-ubuntu-x64", ".tar.gz")
-    } else {
-        ("bin-ubuntu-x64", "bin-ubuntu-x64", ".tar.gz")
-    };
-    pattern
-}
-
-/// First `llama-*` release asset whose name contains `keyword` and ends in
-/// `archive_ext`, as `(name, download url)`.
-fn find_llama_asset(
-    assets: &[serde_json::Value],
-    keyword: &str,
-    archive_ext: &str,
-) -> Option<(String, String)> {
-    assets.iter().find_map(|a| {
-        let name = a["name"].as_str().unwrap_or("");
-        let url = a["browser_download_url"].as_str().unwrap_or("");
-        if name.contains(keyword) && name.starts_with("llama-") && name.ends_with(archive_ext) {
-            Some((name.to_string(), url.to_string()))
-        } else {
-            None
-        }
-    })
-}
-
-/// The release asset to install: the preferred build for this platform and
-/// GPU, else the plain fallback build.
-fn choose_llama_asset(assets: &[serde_json::Value], has_nvidia: bool) -> Option<(String, String)> {
-    let (keyword, fallback, archive_ext) = llama_asset_pattern(has_nvidia);
-    find_llama_asset(assets, keyword, archive_ext)
-        .or_else(|| find_llama_asset(assets, fallback, archive_ext))
-}
-
-/// Unpack a llama.cpp Linux release tarball FLATTENED into `install_dir`.
-///
-/// The tarball nests everything under build/bin/, and the binaries locate their
-/// shared objects via RUNPATH=$ORIGIN, so they must end up adjacent. Every
-/// entry is reduced to its bare file name, so nothing can land outside
-/// `install_dir` whatever path the archive names.
-#[cfg(not(target_os = "windows"))]
-fn extract_llama_tar_gz(
-    bytes: &[u8],
-    install_dir: &std::path::Path,
-    label: &str,
-) -> Result<(), String> {
-    let dec = flate2::read::GzDecoder::new(std::io::Cursor::new(bytes));
-    let mut archive = tar::Archive::new(dec);
-    archive.set_preserve_permissions(true);
-
-    for entry in archive.entries()
-        .map_err(|e| format!("tar open {} failed: {}", label, e))?
-    {
-        let mut entry = entry.map_err(|e| format!("tar entry error: {}", e))?;
-        let entry_type = entry.header().entry_type();
-        let path = entry.path()
-            .map_err(|e| format!("tar path error: {}", e))?
-            .into_owned();
-        let file_name = match path.file_name() {
-            Some(f) if !f.is_empty() => f.to_owned(),
-            _ => continue,
-        };
-        let out_path = install_dir.join(&file_name);
-
-        // SONAME symlinks are load-bearing. The tarball ships
-        // libggml-base.so.0 -> libggml-base.so.0.18.0 and friends, and
-        // binaries record DT_NEEDED by SONAME — drop the links and every
-        // executable dies at startup with "error while loading shared
-        // libraries", even though the real file is sitting right there.
-        // Retargeted to the basename because this tree is flattened.
-        if entry_type.is_symlink() || entry_type.is_hard_link() {
-            let target = entry.link_name()
-                .map_err(|e| format!("tar link error: {}", e))?
-                .ok_or_else(|| format!("link {} has no target",
-                                       file_name.to_string_lossy()))?;
-            let target_name = match target.file_name() {
-                Some(t) if !t.is_empty() => t.to_owned(),
-                _ => continue,
-            };
-            let _ = std::fs::remove_file(&out_path);
-            std::os::unix::fs::symlink(&target_name, &out_path)
-                .map_err(|e| format!("link {} failed: {}",
-                                     file_name.to_string_lossy(), e))?;
-            continue;
-        }
-
-        if !entry_type.is_file() { continue; }
-
-        // unpack() applies the mode from the tar header — without the
-        // executable bit the install "succeeds" and then every run fails
-        // with Permission denied.
-        let _ = std::fs::remove_file(&out_path);
-        entry.unpack(&out_path)
-            .map_err(|e| format!("extract {} failed: {}",
-                                 file_name.to_string_lossy(), e))?;
-    }
-    Ok(())
-}
-
-#[tauri::command]
-fn cmd_install_llama(app: AppHandle) -> Result<String, String> {
-    let install_dir = model_loader::llama_install_dir();
-    std::fs::create_dir_all(&install_dir).map_err(|e| e.to_string())?;
-
-    // Already installed?
-    let local = model_loader::llama_local_path();
-    if local.is_file() {
-        return Ok(local.to_string_lossy().into_owned());
-    }
-
-    app.emit("llama-install-progress", serde_json::json!({
-        "percent": 5, "message": "Detecting GPU…"
-    })).ok();
-
-    // Detect NVIDIA GPU
-    let has_nvidia = std::process::Command::new("nvidia-smi")
+/// Is there an NVIDIA GPU? Chooses the Vulkan build (upstream publishes no
+/// CUDA build for Linux) over the CPU one.
+fn has_nvidia_gpu() -> bool {
+    std::process::Command::new("nvidia-smi")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
         .map(|s| s.success())
-        .unwrap_or(false);
+        .unwrap_or(false)
+}
 
-    // Pick release asset name pattern.
-    //
-    // Upstream names assets per platform:
-    //   Windows  llama-<build>-bin-win-<backend>-x64.zip
-    //   Linux    llama-<build>-bin-ubuntu-<backend>-x64.tar.gz
-    //
-    // There is NO prebuilt CUDA build for Ubuntu — verified against release
-    // b10237, whose ubuntu assets are plain / vulkan / rocm / sycl / openvino
-    // only. So an NVIDIA GPU on Linux takes the VULKAN build, which is the
-    // portable GPU backend upstream actually publishes there.
+/// The pinned llama.cpp for this machine.
+fn pinned_llama() -> Result<&'static llama_install::Pin, String> {
+    llama_install::pin_for(
+        llama_install::PINS,
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        llama_install::backend_for(has_nvidia_gpu()),
+    )
+}
 
+/// What installing llama.cpp would fetch here -- tag, asset, backend, size
+/// and URL -- for the window to show BEFORE the user confirms. From the
+/// pinned table only: no network.
+#[tauri::command]
+fn cmd_llama_install_plan() -> Result<llama_install::Plan, String> {
+    Ok(llama_install::plan(pinned_llama()?))
+}
+
+/// Install the pinned llama.cpp the user confirmed. `asset` is what the
+/// window showed; anything else is refused, so a confirmation can never be
+/// spent on a different download. See `llama_install` for the checks.
+#[tauri::command]
+fn cmd_install_llama(app: AppHandle, asset: String) -> Result<String, String> {
+    let local = model_loader::llama_local_path();
+    if local.is_file() {
+        return Ok(local.to_string_lossy().into_owned());
+    }
+    let pin = pinned_llama()?;
+    llama_install::confirm(pin, &asset)?;
     app.emit("llama-install-progress", serde_json::json!({
-        "percent": 10, "message": "Querying latest llama.cpp release…"
+        "percent": 5,
+        "message": format!("Downloading {} ({:.1} MB) from llama.cpp release {}…",
+                           pin.asset, pin.bytes as f64 / 1e6, llama_install::TAG)
     })).ok();
-
-    // Fetch latest release info from GitHub API.
-    //
-    // Two agents deliberately. The 30s budget is right for a JSON API call and
-    // hopeless for the archive, which is hundreds of megabytes — sharing one
-    // agent is what produced "read llama.cpp failed: timed out reading
-    // response" on a perfectly healthy connection.
-    let agent = ureq::AgentBuilder::new()
-        .timeout(std::time::Duration::from_secs(30))
-        .build();
-    let dl_agent = ureq::AgentBuilder::new()
-        .timeout(std::time::Duration::from_secs(600))
-        .build();
-
-    let release: serde_json::Value = agent
-        .get("https://api.github.com/repos/ggerganov/llama.cpp/releases/latest")
-        .set("Accept", "application/vnd.github+json")
-        .call()
-        .map_err(|e| format!("GitHub API error: {}", e))?
-        .into_json()
-        .map_err(|e| format!("JSON parse error: {}", e))?;
-
-    let assets = release["assets"]
-        .as_array()
-        .ok_or("no assets in release")?;
-
-    // Find the main binary archive (not cudart)
-    let (asset_name, download_url) = choose_llama_asset(assets, has_nvidia)
-        .ok_or("could not find a suitable llama.cpp release asset")?;
-
-    // Also grab cudart if using CUDA
-    #[cfg(not(target_os = "windows"))]
-    let cudart_url: Option<String> = None;   // Windows-only asset: CUDA runtime DLLs
-
-    #[cfg(target_os = "windows")]
-    let cudart_url = if has_nvidia {
-        assets.iter().find_map(|a| {
-            let name = a["name"].as_str().unwrap_or("");
-            let url = a["browser_download_url"].as_str().unwrap_or("");
-            if name.starts_with("cudart-") && name.contains("cuda-12.4") && name.ends_with(".zip") {
-                Some(url.to_string())
-            } else {
-                None
-            }
-        })
-    } else {
-        None
-    };
-
-    app.emit("llama-install-progress", serde_json::json!({
-        "percent": 15, "message": format!("Downloading {}…", asset_name)
-    })).ok();
-
-    // Download and extract helper
-    let download_and_extract = |url: &str, label: &str| -> Result<(), String> {
-        let resp = dl_agent.get(url)
-            .call()
-            .map_err(|e| format!("download {} failed: {}", label, e))?;
-
-        let mut bytes = Vec::new();
-        resp.into_reader()
-            .read_to_end(&mut bytes)
-            .map_err(|e| format!("read {} failed: {}", label, e))?;
-
-        // Windows ships .zip, Linux .tar.gz. Both are FLATTENED into
-        // install_dir: the Linux tarball nests everything under build/bin/, and
-        // the binaries locate their shared objects via RUNPATH=$ORIGIN, so they
-        // must end up adjacent — which is the layout the Windows zips already
-        // have.
-        #[cfg(target_os = "windows")]
-        {
-            let cursor = std::io::Cursor::new(&bytes);
-            let mut archive = zip::ZipArchive::new(cursor)
-                .map_err(|e| format!("zip open {} failed: {}", label, e))?;
-
-            for i in 0..archive.len() {
-                let mut file = archive.by_index(i)
-                    .map_err(|e| format!("zip entry error: {}", e))?;
-                let name = file.name().to_string();
-                if name.ends_with('/') { continue; }
-
-                let file_name = std::path::Path::new(&name)
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .into_owned();
-                if file_name.is_empty() { continue; }
-
-                let out_path = install_dir.join(&file_name);
-                let mut out_file = std::fs::File::create(&out_path)
-                    .map_err(|e| format!("create file {} failed: {}", file_name, e))?;
-                std::io::copy(&mut file, &mut out_file)
-                    .map_err(|e| format!("extract {} failed: {}", file_name, e))?;
-            }
+    let last = std::cell::Cell::new(0u64);
+    let progress = |got: u64| {
+        let pct = 5 + got * 85 / pin.bytes.max(1);
+        if pct != last.get() {
+            last.set(pct);
+            app.emit("llama-install-progress", serde_json::json!({
+                "percent": pct, "message": format!("Downloading {}…", pin.asset)
+            })).ok();
         }
-
-        #[cfg(not(target_os = "windows"))]
-        extract_llama_tar_gz(&bytes, &install_dir, label)?;
-
-        Ok(())
     };
-
-    // Download main binary
-    download_and_extract(&download_url, "llama.cpp")?;
-
+    let path = llama_install::install(
+        pin, &llama_install::url_for(pin), &model_loader::llama_install_dir(), &progress, &|_| Ok(()))?;
     app.emit("llama-install-progress", serde_json::json!({
-        "percent": 70, "message": "Binaries extracted."
+        "percent": 100,
+        "message": format!("llama.cpp {} installed and verified.", llama_install::TAG)
     })).ok();
-
-    // Download CUDA runtime if applicable
-    if let Some(ref cudart) = cudart_url {
-        app.emit("llama-install-progress", serde_json::json!({
-            "percent": 75, "message": "Downloading CUDA runtime…"
-        })).ok();
-
-        download_and_extract(cudart, "cudart")?;
-    }
-
-    // Verify
-    let llama_path = model_loader::llama_local_path();
-    if !llama_path.is_file() {
-        return Err(format!("installation finished but {} not found in {}", 
-            model_loader::LLAMA_BIN, install_dir.display()));
-    }
-
-    app.emit("llama-install-progress", serde_json::json!({
-        "percent": 100, "message": "llama.cpp installed successfully."
-    })).ok();
-
-    Ok(llama_path.to_string_lossy().into_owned())
+    Ok(path.to_string_lossy().into_owned())
 }
 
 fn main() {
@@ -1594,6 +1370,7 @@ fn main() {
             cmd_link_hrt,
             cmd_detect_llama,
             cmd_install_llama,
+            cmd_llama_install_plan,
         ])
         .run(tauri::generate_context!())
         .expect("failed to start AiSmartGuy");
@@ -1689,102 +1466,6 @@ mod tests {
     // ── llama.cpp installer ────────────────────────────────────────────
 
     /// Asset names in the shape upstream publishes (release b10246).
-    fn release_assets(include_vulkan: bool) -> Vec<serde_json::Value> {
-        let mut names = vec![
-            "cudart-llama-bin-win-cuda-12.4-x64.zip",
-            "llama-b10246-bin-win-cuda-12.4-x64.zip",
-            "llama-b10246-bin-win-cpu-x64.zip",
-            "llama-b10246-bin-macos-arm64.tar.gz",
-            "llama-b10246-bin-ubuntu-rocm-x64.tar.gz",
-            "llama-b10246-bin-ubuntu-x64.tar.gz",
-        ];
-        if include_vulkan {
-            names.push("llama-b10246-bin-ubuntu-vulkan-x64.tar.gz");
-        }
-        names
-            .into_iter()
-            .map(|n| serde_json::json!({ "name": n, "browser_download_url": format!("https://example.invalid/{n}") }))
-            .collect()
-    }
-
-    /// The installer picked Windows .zip assets on every platform, so even a
-    /// successful download installed binaries Linux cannot run.
-    #[cfg(all(unix, not(target_os = "macos")))]
-    #[test]
-    fn linux_installer_picks_the_ubuntu_tarball() {
-        let all = release_assets(true);
-        let gpu = choose_llama_asset(&all, true).map(|(name, _)| name);
-        let cpu = choose_llama_asset(&all, false).map(|(name, _)| name);
-        let no_vulkan = choose_llama_asset(&release_assets(false), true).map(|(name, _)| name);
-        assert_eq!(gpu.as_deref(), Some("llama-b10246-bin-ubuntu-vulkan-x64.tar.gz"));
-        assert_eq!(cpu.as_deref(), Some("llama-b10246-bin-ubuntu-x64.tar.gz"));
-        assert_eq!(no_vulkan.as_deref(), Some("llama-b10246-bin-ubuntu-x64.tar.gz"));
-    }
-
-    /// Build a gzipped tarball shaped like a llama.cpp Linux release.
-    #[cfg(unix)]
-    fn release_tarball() -> Vec<u8> {
-        let gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
-        let mut tar = tar::Builder::new(gz);
-
-        let mut file = |path: &str, body: &[u8], mode: u32| {
-            let mut h = tar::Header::new_gnu();
-            h.set_size(body.len() as u64);
-            h.set_mode(mode);
-            tar.append_data(&mut h, path, body).unwrap();
-        };
-        file("build/bin/llama-completion", b"#!/bin/sh\n", 0o755);
-        file("build/bin/libggml-base.so.0.18.0", b"real library", 0o644);
-
-        let mut link = tar::Header::new_gnu();
-        link.set_entry_type(tar::EntryType::Symlink);
-        link.set_size(0);
-        link.set_link_name("libggml-base.so.0.18.0").unwrap();
-        tar.append_data(&mut link, "build/bin/libggml-base.so.0", std::io::empty()).unwrap();
-
-        // A hostile path. append() writes the header as given, unvalidated.
-        let mut evil = tar::Header::new_gnu();
-        let name = b"../escape.txt";
-        evil.as_gnu_mut().unwrap().name[..name.len()].copy_from_slice(name);
-        evil.set_size(4);
-        evil.set_mode(0o644);
-        evil.set_cksum();
-        tar.append(&evil, &b"evil"[..]).unwrap();
-
-        tar.into_inner().unwrap().finish().unwrap()
-    }
-
-    /// Dropping the SONAME symlinks made every binary die with "error while
-    /// loading shared libraries"; losing the mode made them "Permission
-    /// denied". Every entry must land flat inside install_dir.
-    #[cfg(unix)]
-    #[test]
-    fn tarball_extracts_flat_with_symlinks_and_modes() {
-        use std::os::unix::fs::PermissionsExt;
-        let root = scratch("tar");
-        let install = root.join("llama-cpp");
-        std::fs::create_dir_all(&install).unwrap();
-
-        let result = extract_llama_tar_gz(&release_tarball(), &install, "test");
-
-        let bin_mode = std::fs::metadata(install.join("llama-completion")).map(|m| m.permissions().mode());
-        let link = std::fs::read_link(install.join("libggml-base.so.0"));
-        let through_link = std::fs::read(install.join("libggml-base.so.0"));
-        let escaped_inside = install.join("escape.txt").is_file();
-        let escaped_outside = root.join("escape.txt").exists();
-        let _ = std::fs::remove_dir_all(&root);
-
-        result.unwrap();
-        assert_ne!(bin_mode.unwrap() & 0o111, 0, "binary must stay executable");
-        assert_eq!(link.unwrap(), Path::new("libggml-base.so.0.18.0"));
-        assert_eq!(through_link.unwrap(), b"real library");
-        assert!(escaped_inside, "a ../ entry is flattened into install_dir");
-        assert!(!escaped_outside, "nothing may be written outside install_dir");
-    }
-
-    // ── context-size VRAM profile ──────────────────────────────────────
-
-    /// Minimal GGUF v3 metadata: 32 layers, head dim 128, `kv_heads` KV heads.
     fn gguf_model(dir: &Path, name: &str, kv_heads: u32, native_ctx: u32) {
         std::fs::create_dir_all(dir).unwrap();
         let kvs: [(&str, u32); 5] = [

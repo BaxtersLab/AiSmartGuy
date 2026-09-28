@@ -15,16 +15,15 @@ serde_json = "1"
 rfd        = "0.14"
 tokio      = { version = "1", features = ["time", "sync"] }
 ureq       = { version = "2" }
-zip        = { version = "2", default-features = false, features = ["deflate"] }
+# The llama.cpp download (src/llama_install.rs): a pinned tarball, hashed
+# while streaming, then unpacked. Only Linux x86_64 builds are pinned; other
+# platforms are refused before any download, so no zip reader is needed.
+sha2       = "0.10"
+flate2     = "1"
+tar        = "0.4"
 manifest      = { path = "../crates/manifest" }
 model_loader  = { path = "../crates/model_loader" }
 orchestrator  = { path = "../crates/orchestrator" }
 pdf_io        = { path = "../crates/pdf_io" }
 rag_engine    = { path = "../crates/rag_engine" }
 ui            = { path = "../crates/ui" }
-
-# llama.cpp ships .zip on Windows and .tar.gz on Linux, so each platform pulls
-# only the archive reader it actually uses.
-[target.'cfg(not(target_os = "windows"))'.dependencies]
-flate2 = "1"
-tar = "0.4"
