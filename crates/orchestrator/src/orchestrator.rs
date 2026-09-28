@@ -621,26 +621,15 @@ impl Orchestrator {
                         merged.parse_failures.len()
                     );
 
-                    // Synthesis input: the compact table as one leaf, plus any
-                    // unparsed chapters as extra leaves so nothing is dropped.
-                    let mut leaves = vec![table];
+                    // Synthesis input: the compact table as one block, plus any
+                    // unparsed analyses as extra blocks so nothing is dropped.
+                    let mut blocks = vec![("Findings table".to_string(), table)];
                     for (label, prose) in merged.parse_failures {
-                        leaves.push(format!("=== {} (unparsed prose) ===\n{}", label, prose));
+                        blocks.push((format!("Unparsed analysis of {label}"), prose));
                     }
-                    let mut synth: HashMap<String, Vec<String>> = HashMap::new();
-                    synth.insert("findings".to_string(), leaves);
-                    FusionInput { model_outputs: synth }
+                    FusionInput { blocks }
                 } else {
-                    // Read output texts for fusion input (prose fold).
-                    let mut fusion_texts: HashMap<String, Vec<String>> = HashMap::new();
-                    for (name, paths) in &model_outputs {
-                        let texts: Vec<String> = paths
-                            .iter()
-                            .map(|p| std::fs::read_to_string(p).unwrap_or_default())
-                            .collect();
-                        fusion_texts.insert(name.clone(), texts);
-                    }
-                    FusionInput { model_outputs: fusion_texts }
+                    FusionInput { blocks: fold_blocks(&chapter_outputs) }
                 };
 
                 match run_fusion(fusion_config, &fusion_input, &self.run_dir, self.manifest.resource_throttle.throttle_pct) {
@@ -798,10 +787,41 @@ fn findings_merge_inputs(outputs: &ChapterOutputs) -> Vec<(String, String)> {
     for name in names {
         for (ch, path) in &outputs[name] {
             let text = std::fs::read_to_string(path).unwrap_or_default();
-            chapters.push((format!("{} · chapter {}", name, ch + 1), text));
+            // The label reaches the model (the findings table's locations):
+            // the chapter only, never the lane.
+            chapters.push((format!("chapter {}", ch + 1), text));
         }
     }
     chapters
+}
+
+/// The prose fold's blocks: every analysis, ordered by chapter (then lane,
+/// then pass), headed "Chapter N, analysis K", K counting within the chapter.
+/// The chapter is the one the output analysed, never its position in the
+/// list: with two RAG passes over chapter 1, the fold used to call the second
+/// one "chapter 2". And no lane name: the model took "fusion" for the book's
+/// title.
+fn fold_blocks(outputs: &ChapterOutputs) -> Vec<(String, String)> {
+    let mut all: Vec<(usize, &String, usize, &PathBuf)> = Vec::new();
+    for (name, list) in outputs {
+        for (pass, (ch, path)) in list.iter().enumerate() {
+            all.push((*ch, name, pass, path));
+        }
+    }
+    all.sort_by(|a, b| (a.0, a.1, a.2).cmp(&(b.0, b.1, b.2)));
+    let mut blocks = Vec::new();
+    let mut current: Option<usize> = None;
+    let mut k = 0;
+    for (ch, _, _, path) in all {
+        if current != Some(ch) {
+            current = Some(ch);
+            k = 0;
+        }
+        k += 1;
+        blocks.push((format!("Chapter {}, analysis {}", ch + 1, k),
+                     std::fs::read_to_string(path).unwrap_or_default()));
+    }
+    blocks
 }
 
 /// The report body when there is no fusion output: each model's outputs in
@@ -1123,10 +1143,28 @@ mod multi_pass_label_tests {
         let (dir, outputs) = write_outputs("findings", &TWO_BY_TWO);
         let labels: Vec<String> = findings_merge_inputs(&outputs).into_iter().map(|(l, _)| l).collect();
         let _ = std::fs::remove_dir_all(&dir);
-        assert_eq!(
-            labels,
-            ["model1 · chapter 1", "model1 · chapter 1", "model1 · chapter 2", "model1 · chapter 2"]
-        );
+        assert_eq!(labels, ["chapter 1", "chapter 1", "chapter 2", "chapter 2"]);
+    }
+
+    /// The fold's headings: the chapter each output analysed (not its
+    /// position), and no lane or stage name for the model to take as content.
+    #[test]
+    fn fold_blocks_are_headed_by_chapter_never_by_lane_or_position() {
+        let (dir, mut outputs) = write_outputs("fold", &TWO_BY_TWO);
+        let (dir2, second) = write_outputs("fold2", &TWO_BY_TWO);
+        outputs.insert("fusion".to_string(), second.into_values().next().unwrap());
+        let blocks = fold_blocks(&outputs);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir2);
+        let headings: Vec<&str> = blocks.iter().map(|(h, _)| h.as_str()).collect();
+        assert_eq!(headings, [
+            "Chapter 1, analysis 1", "Chapter 1, analysis 2", "Chapter 1, analysis 3", "Chapter 1, analysis 4",
+            "Chapter 2, analysis 1", "Chapter 2, analysis 2", "Chapter 2, analysis 3", "Chapter 2, analysis 4",
+        ]);
+        assert_eq!(blocks[0].1, "ch1 pass1", "chapter 1's text under chapter 1");
+        for (h, _) in &blocks {
+            assert!(!h.contains("model") && !h.contains("fusion") && !h.contains('·'), "{h}");
+        }
     }
 
     /// The no-fusion report took each heading from the output's position:

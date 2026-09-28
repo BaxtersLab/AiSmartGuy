@@ -37,7 +37,9 @@ if [ "$FAKE_LLAMA_MODE" = always-fails ]; then
   echo "llama_completion: error: unable to read prompt" >&2; exit 1
 fi
 if [ "$ngl" != 0 ]; then cat "$here/oom.log" >&2; exit 1; fi
-echo "CPU ANSWER for $which"
+# An answer that names nothing internal, so what the fold is fed is only
+# what the pipeline itself added.
+echo "CPU ANSWER: the argument is sound."
 "#;
 
 fn write_exe(path: &Path, body: &str) {
@@ -132,7 +134,20 @@ fn a_run_the_gpu_refuses_finishes_on_the_cpu_with_its_synthesis() {
     assert!(seen[gpu[1]].1.starts_with("fusion/chapter_"), "{seen:?}");
     assert!(seen[gpu[2]].1.starts_with("fusion/pass"), "{seen:?}");
     let synthesis = std::fs::read_to_string(run_dir.join("outputs/fusion/fusion_output.txt")).unwrap();
-    assert!(synthesis.contains("CPU ANSWER for fusion/pass"), "no synthesis: {synthesis:?}");
+    assert!(synthesis.contains("CPU ANSWER"), "no synthesis: {synthesis:?}");
+    // Nothing internal reaches a model as content: no lane or stage names in
+    // any prompt of the run (Hermes took "fusion · chapter 1" for the title).
+    let mut prompts = 0;
+    for lane in ["model1", "fusion"] {
+        for e in std::fs::read_dir(run_dir.join("prompts").join(lane)).unwrap() {
+            let text = std::fs::read_to_string(e.unwrap().path()).unwrap();
+            prompts += 1;
+            for label in ["model1", "model2", "model3", "fusion", "findings ·", " · chapter"] {
+                assert!(!text.contains(label), "a prompt contains the internal label {label:?}");
+            }
+        }
+    }
+    assert!(prompts >= 3, "premise: chapter and fold prompts were written ({prompts})");
     let report = std::fs::read_dir(&run_dir).unwrap()
         .filter_map(|e| e.ok()).any(|e| e.file_name().to_string_lossy().ends_with("_AiSmartGuy_Report.pdf"));
     assert!(report, "no report PDF in {}", run_dir.display());

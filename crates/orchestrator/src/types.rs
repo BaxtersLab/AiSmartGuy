@@ -35,11 +35,14 @@ pub struct RunContext {
 /// key = model name, value = ordered list of output file paths
 pub type ModelOutputs = HashMap<String, Vec<PathBuf>>;
 
-/// Payload for fusion: the collected outputs from every model, per chunk.
+/// Payload for fusion: the blocks to fold, in order, each with the heading
+/// the model reads. Headings name the book's structure only ("Chapter 2,
+/// analysis 1", "Findings table"), never a lane or pipeline stage: Hermes
+/// took a "fusion · chapter 1" label for the book's title (2026-09-27).
 #[derive(Debug, Clone)]
 pub struct FusionInput {
-    /// model name → ordered list of chunk output texts
-    pub model_outputs: HashMap<String, Vec<String>>,
+    /// (heading, text), in the order they are folded.
+    pub blocks: Vec<(String, String)>,
 }
 
 /// A UI progress event emitted by the orchestrator.

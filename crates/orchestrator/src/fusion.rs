@@ -51,24 +51,8 @@ pub fn run_fusion(
 
     let final_output_path = output_dir.join("fusion_output.txt");
 
-    // ── Step 1: Flatten model outputs into labeled leaf blocks ──────────────
-    // Sort model names for determinism (HashMap iteration order is not stable).
-    let mut model_names: Vec<&String> = input.model_outputs.keys().collect();
-    model_names.sort();
-
-    let mut leaves: Vec<String> = Vec::new();
-    for name in model_names {
-        if let Some(outputs) = input.model_outputs.get(name) {
-            for (i, text) in outputs.iter().enumerate() {
-                let cleaned = strip_llama_noise(text);
-                let cleaned = cleaned.trim();
-                if cleaned.is_empty() {
-                    continue;
-                }
-                leaves.push(format!("=== {} · chapter {} ===\n{}", name, i + 1, cleaned));
-            }
-        }
-    }
+    // ── Step 1: One leaf per block, under the heading the caller chose ─────
+    let leaves = fold_leaves(input);
 
     if leaves.is_empty() {
         std::fs::write(&final_output_path, "No analysis output was produced to synthesize.")
@@ -217,6 +201,16 @@ fn run_fold(
     Ok(leaves.join("\n\n"))
 }
 
+/// The fold's leaves: each non-empty block under its heading. The headings
+/// come from the caller (see `FusionInput`); nothing here adds a label.
+pub(crate) fn fold_leaves(input: &FusionInput) -> Vec<String> {
+    input.blocks.iter().filter_map(|(heading, text)| {
+        let cleaned = strip_llama_noise(text);
+        let cleaned = cleaned.trim();
+        (!cleaned.is_empty()).then(|| format!("=== {heading} ===\n{cleaned}"))
+    }).collect()
+}
+
 /// Determine the fusion model's usable context: native GGUF context, capped by
 /// what the (throttled) VRAM budget can actually hold to avoid KV-cache OOM.
 fn fusion_effective_ctx(fusion_config: &manifest::ModelConfig, throttle_pct: u32) -> usize {
@@ -324,7 +318,7 @@ mod tests {
 
     #[test]
     fn final_and_intermediate_prompts_differ() {
-        let blocks = vec!["=== model1 · chapter 1 ===\nfinding".to_string()];
+        let blocks = vec!["=== Chapter 1, analysis 1 ===\nfinding".to_string()];
         let final_prompt = build_fold_prompt(&blocks, true);
         let inter_prompt = build_fold_prompt(&blocks, false);
         assert!(final_prompt.contains("final consolidated review"));

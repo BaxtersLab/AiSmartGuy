@@ -8,7 +8,6 @@
 //! which is process-wide.
 #![cfg(unix)]
 
-use std::collections::HashMap;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
@@ -75,7 +74,7 @@ fn a_fold_the_gpu_refuses_finishes_on_the_cpu() {
         ..Default::default()
     };
     let input = FusionInput {
-        model_outputs: HashMap::from([("model1".to_string(), vec!["Chapter one's analysis.".to_string()])]),
+        blocks: vec![("Chapter 1, analysis 1".to_string(), "Chapter one's analysis.".to_string())],
     };
 
     // The GPU refuses: the fold is rerun on the CPU and completes.
