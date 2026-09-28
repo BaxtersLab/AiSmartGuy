@@ -1,19 +1,23 @@
 Package: baxters-aismartguy
-Version: 0.1.0
+Version: 0.1.1
 Section: utils
 Priority: optional
 Architecture: amd64
 Maintainer: Baxters Lab <165753632+Baxterv5@users.noreply.github.com>
 Depends: libc6, libgcc-s1, libwebkit2gtk-4.1-0, libjavascriptcoregtk-4.1-0,
- libsoup-3.0-0, libgtk-3-0t64, libgdk-pixbuf-2.0-0, libglib2.0-0t64, libcairo2
+ libsoup-3.0-0, libgtk-3-0t64, libgdk-pixbuf-2.0-0, libglib2.0-0t64, libcairo2,
+ llama.cpp-tools
 Description: AiSmartGuy — local AI assistant with a structured findings pipeline
  A desktop assistant built on Tauri and WebKitGTK. The interface is served from
  static files inside the package; there is no bundled model and nothing is
  fetched at install time.
  .
- Depends are exactly the binary's DIRECT NEEDED entries, resolved to their
- Ubuntu packages. libpango was in an earlier draft and is removed: it is pulled
- in by GTK rather than linked here, and a dependency list should say what this
+ Depends are the binary's DIRECT NEEDED entries, resolved to their Ubuntu
+ packages, plus llama.cpp-tools (0.1.1): the inference engine the app runs.
+ Without it the app finds no llama.cpp and can analyse nothing until the user
+ installs one; with it, /usr/bin/llama-completion is found on PATH (CPU).
+ libpango was in an earlier draft and is removed: it is pulled in by GTK
+ rather than linked here, and a dependency list should say what this
  package needs, not what it happens to get. WebKitGTK and its
  JavaScriptCore and libsoup companions are the substance of a Tauri app on
  Linux: without them the package installs cleanly and then cannot open a window.
