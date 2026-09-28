@@ -2,6 +2,48 @@
 
 _Append-only (Article VIII). Newest entry at the top._
 
+## [2026-09-28] — Four defects the supervisor listed, fixed before close
+
+The supervisor's 20:47 entry turned four of my "seen, not changed" notes
+into defects. Each is fixed with a test, red by mutation (8 mutants, all
+killed).
+
+- **`eabe213` Report PDFs:** poppler said "Syntax Error: Invalid XRef entry
+  0" for every report.
+  - Cause: lopdf 0.32 writes an xref STREAM for every new document (1.4 as
+    well), indexed from object 1. With the manifest (a few KB) in `/Info`,
+    poppler then looks for entry 0. A small `/Info` hides it.
+  - Fix: a classic xref table, which always carries the free entry 0.
+  - Tests: the table's shape; `pdftotext` on a real-shaped report with no
+    warning (fails closed without poppler-utils); the app reading its
+    manifest back (the control).
+  - The comment claiming classic tables below 1.5 was wrong and is gone.
+  - A real VM report reads cleanly in `pdftotext` and `pdfinfo`.
+- **`4b253de` Internal labels reached the model.**
+  - The fold's blocks were headed "=== fusion · chapter N ===", and Hermes
+    called the book "Fusion". Phase 2 fed "findings ·" and
+    "model1 · chapter N".
+  - N was the output's position: two RAG passes over one chapter became
+    "chapter 2".
+  - Fix: `FusionInput` carries `(heading, text)` blocks built by the
+    orchestrator: "Chapter N, analysis K" from the chapter each output
+    analysed, "Findings table", and findings labelled "chapter N".
+  - Tests: the headings, and a whole run whose prompts must contain no lane
+    or stage name.
+- **`2f8ef04`, `a566ad0` Lock for 10 Runs** accepted empty lanes. It forces
+  Full mode and cannot be released, so nothing could run until a restart.
+  It now refuses, with "choose a model in all four lanes first" on its own
+  line below the buttons. VM: refused with empty lanes, and it locks with
+  four (the control).
+- **`233b398` The Ready card** covered every finished run's completion
+  screen, not only after a terminated run as I first noted. The start-up
+  splash listened to `pipeline-progress` forever, and a finished run emits
+  it at 100%. The listener now stops at start-up. VM: a finished run shows
+  no Ready card.
+
+**Gate:** a fresh clone at `a566ad0` gives 282 passed, 282 listed. Each
+commit was gated on its own: 279, 280, 281, 282, 282.
+
 ## [2026-09-28] — llama.cpp: the archive's by default; the in-app download pinned and verified (0.1.1)
 
 Supervisor rulings ASG-Q1 and ASG-Q2 (the manager's binding conditions) in
