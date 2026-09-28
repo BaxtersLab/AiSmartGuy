@@ -740,6 +740,11 @@
         var browseBtn = document.getElementById('mlBrowseBtn');
         var resetBtn  = document.getElementById('mlResetBtn');
         if (!browseBtn || !window.__TAURI__ || !window.__TAURI__.core) return;
+        // Once only. This runs every time the Model Loader is shown, and each
+        // call used to add another set of listeners: after two visits one
+        // Browse click opened two folder pickers (VM harness, 2026-09-27).
+        if (browseBtn.dataset.wired) return;
+        browseBtn.dataset.wired = '1';
 
         function applyPath(p) {
           mlLibraryPath.value = p;
