@@ -165,6 +165,25 @@ impl FindingsAggregate {
         format!("Quotes verified: {} of {}", self.quotes_verified(), self.quotes_total())
     }
 
+    /// Quotes not found in the chapter they cite.
+    pub fn quotes_not_found(&self) -> usize {
+        self.findings.iter().filter(|f| f.check == QuoteCheck::NotFound).count()
+    }
+
+    /// Quotes of fewer than four words, never checked (F3).
+    pub fn quotes_too_short(&self) -> usize {
+        self.findings.iter().filter(|f| f.check == QuoteCheck::TooShort).count()
+    }
+
+    /// The line under the header: why the rest are not evidence.
+    pub fn quotes_breakdown(&self) -> String {
+        format!(
+            "Not verified: {} not found in the chapter cited, {} too short to verify.",
+            self.quotes_not_found(),
+            self.quotes_too_short()
+        )
+    }
+
     /// rule_id → evidenced count. Feeds `optimization` real per-rule hit counts.
     pub fn per_rule_counts(&self) -> BTreeMap<String, u32> {
         self.rules
@@ -192,6 +211,18 @@ impl FindingsAggregate {
     }
 }
 
+/// F1 (manager ruling, 2026-09-28): prose findings carry no chapter-verified
+/// quotes. Shown wherever prose analysis reaches the reader: a run in prose
+/// mode, or a chapter whose structured output did not parse.
+pub const PROSE_DISCLOSURE: &str = "Quotes not checked: prose analysis does not carry \
+    chapter-verified quotes. Nothing it quotes has been verified against the book, and none \
+    of it is presented or scored as verified evidence.";
+
+/// The heading for a chapter analysis that fell back to prose.
+pub fn unparsed_heading(label: &str) -> String {
+    format!("Unparsed analysis of {label} (prose; quotes not checked)")
+}
+
 /// Result of merging every chapter's output.
 #[derive(Debug, Clone)]
 pub struct MergeResult {
@@ -199,6 +230,27 @@ pub struct MergeResult {
     /// `(chapter_label, raw_prose)` for chapters whose output did not parse —
     /// route these through the prose fold so nothing is silently dropped.
     pub parse_failures: Vec<(String, String)>,
+}
+
+impl MergeResult {
+    /// The note for chapters whose structured output fell back to prose, if any.
+    pub fn prose_fallback_note(&self) -> Option<String> {
+        let n = self.parse_failures.len();
+        (n > 0).then(|| format!(
+            "{n} chapter analysis(es) did not parse as structured findings and fell back to \
+             prose. {PROSE_DISCLOSURE}"
+        ))
+    }
+
+    /// The report's header: the quote counts, and the prose note when needed.
+    pub fn report_header(&self) -> String {
+        let mut h = format!("{}\n{}", self.aggregate.quotes_header(), self.aggregate.quotes_breakdown());
+        if let Some(note) = self.prose_fallback_note() {
+            h.push_str("\n");
+            h.push_str(&note);
+        }
+        h
+    }
 }
 
 /// Parse a model output into findings. Tries strict JSON first, then a lenient
@@ -290,7 +342,7 @@ pub fn merge_findings(outputs: &[(usize, String)], sources: &[&str]) -> MergeRes
                 locations: Vec::new(),
                 exemplars: Vec::new(),
             });
-            if let QuoteCheck::Verified { start, end } = check {
+            if let QuoteCheck::Verified { start, end, .. } = check {
                 entry.count += 1;
                 let sev = Severity::parse(&f.severity);
                 if sev > entry.max_severity {
@@ -386,6 +438,8 @@ pub fn render_synthesis_table(agg: &FindingsAggregate) -> String {
 fn render_table(agg: &FindingsAggregate, with_claimed_quotes: bool) -> String {
     let mut out = String::from("# Findings\n\n");
     out.push_str(&agg.quotes_header());
+    out.push('\n');
+    out.push_str(&agg.quotes_breakdown());
     out.push_str("\n\n");
     if agg.rules.is_empty() {
         out.push_str("_No structured findings were produced._\n");
@@ -395,7 +449,7 @@ fn render_table(agg: &FindingsAggregate, with_claimed_quotes: bool) -> String {
     out.push_str(&format!(
         "{} finding(s) across {} rule(s), from {} chapter(s). {} are backed by a quote \
          verified in the chapter they cite; {} are unsupported model inferences, their \
-         quotes not found there.\n\n",
+         quotes not found there or too short to verify.\n\n",
         agg.total_findings,
         agg.rules.len(),
         agg.chapters_parsed,
@@ -436,10 +490,11 @@ fn render_table(agg: &FindingsAggregate, with_claimed_quotes: bool) -> String {
                 cf.finding.note.trim()
             ));
             if with_claimed_quotes {
+                let why = if cf.check == QuoteCheck::TooShort { "too short to verify" } else { "not found in chapter" };
                 out.push_str(&format!(
-                    "  - {} {}. Model's claimed quote (not found in chapter): \"{}\"\n",
-                    crate::quote_check::NOT_FOUND,
-                    cf.chapter.trim_start_matches("chapter "),
+                    "  - {} ({}). Model's claimed quote ({why}): \"{}\"\n",
+                    cf.check.label(),
+                    cf.chapter,
                     clamp_quote(&cf.finding.quote)
                 ));
             }
@@ -487,8 +542,10 @@ pub fn render_findings_json(agg: &FindingsAggregate) -> String {
         .iter()
         .map(|cf| {
             let offsets = match cf.check {
-                QuoteCheck::Verified { start, end } => format!("{{\"start\":{start},\"end\":{end}}}"),
-                QuoteCheck::NotFound => "null".to_string(),
+                QuoteCheck::Verified { start, end, trailing_mark_removed } => format!(
+                    "{{\"start\":{start},\"end\":{end},\"trailing_mark_removed\":{trailing_mark_removed}}}"
+                ),
+                QuoteCheck::NotFound | QuoteCheck::TooShort => "null".to_string(),
             };
             format!(
                 "{{\"chapter\":{},\"rule_id\":{},\"severity\":{},\"location\":{},\"note\":{},\"quote\":{},\"quote_check\":{},\"source_offsets\":{}}}",
@@ -504,9 +561,11 @@ pub fn render_findings_json(agg: &FindingsAggregate) -> String {
         })
         .collect();
     format!(
-        "{{\"quotes_verified\":{},\"quotes_total\":{},\"quote_normalisation\":{},\"total_findings\":{},\"chapters_parsed\":{},\"rules\":[{}],\"findings\":[{}]}}",
+        "{{\"quotes_verified\":{},\"quotes_total\":{},\"quotes_not_found\":{},\"quotes_too_short\":{},\"quote_normalisation\":{},\"total_findings\":{},\"chapters_parsed\":{},\"rules\":[{}],\"findings\":[{}]}}",
         agg.quotes_verified(),
         agg.quotes_total(),
+        agg.quotes_not_found(),
+        agg.quotes_too_short(),
         json_string(&crate::quote_check::unicode_versions()),
         agg.total_findings,
         agg.chapters_parsed,
@@ -523,7 +582,7 @@ fn json_string(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::quote_check::{NOT_FOUND, VERIFIED};
+    use crate::quote_check::{NOT_FOUND, TOO_SHORT, VERIFIED};
 
     const CH1: &str = "The minister said \u{201C}every family will be better off\u{201D} and left the room.";
     const CH2: &str = "Later the figures were revised down. Everyone knows the minister was wrong.";
@@ -628,7 +687,7 @@ mod tests {
     #[test]
     fn merge_routes_parse_failures_to_fallback() {
         let res = merge(vec![
-            (0, f("F-01", "every family", "p", "low")),
+            (0, f("F-01", "every family will be better off", "p", "low")),
             (1, "prose that is not JSON at all".to_string()),
         ]);
         assert_eq!(res.aggregate.chapters_parsed, 1);
@@ -650,7 +709,7 @@ mod tests {
     #[test]
     fn per_rule_counts_match_aggregate() {
         let counts = merge(vec![
-            (0, f("F-01", "every family", "p", "low")),
+            (0, f("F-01", "every family will be better off", "p", "low")),
             (1, f("F-01", "the figures were revised", "p", "low")),
             (1, f("F-02", "the minister was wrong", "p", "low")),
         ])
@@ -671,10 +730,10 @@ mod tests {
     #[test]
     fn per_category_counts_maps_rules_to_categories() {
         let agg = merge(vec![
-            (0, f("F-01", "every family", "p", "low")),
+            (0, f("F-01", "every family will be better off", "p", "low")),
             (1, f("F-02", "the figures were revised", "p", "low")),
             (1, f("F-09", "the minister was wrong", "p", "low")),
-            (0, f("F-99", "left the room", "p", "low")), // unmapped → dropped
+            (0, f("F-99", "and left the room", "p", "low")), // unmapped → dropped
         ])
         .aggregate;
         let cats = agg.per_category_counts(&rule_categories());
@@ -689,8 +748,8 @@ mod tests {
         let agg = merge(vec![
             (0, f("F-01", "every family will be better off", "p1", "low")),
             // The rule catalog's own wording, presented as a quote: not in the book.
-            (0, f("F-01", "appeal to emotion", "p2", "high")),
-            (1, f("F-09", "an invented line", "p3", "high")),
+            (0, f("F-01", "appeal to emotion in this passage", "p2", "high")),
+            (1, f("F-09", "an invented line of text", "p3", "high")),
         ])
         .aggregate;
         let r = &agg.rules[0];
@@ -727,7 +786,7 @@ mod tests {
 
     #[test]
     fn an_output_with_no_source_verifies_nothing() {
-        let agg = merge(vec![(5, f("F-01", "every family", "p", "low"))]).aggregate;
+        let agg = merge(vec![(5, f("F-01", "every family will be better off", "p", "low"))]).aggregate;
         assert_eq!(agg.findings[0].check, QuoteCheck::NotFound);
         assert_eq!(agg.findings[0].chapter, "chapter 6");
     }
@@ -745,7 +804,7 @@ mod tests {
         let agg = merge(vec![(0, f("F-01", quote, "p", "low"))]).aggregate;
         let cf = &agg.findings[0];
         assert_eq!(cf.finding.quote, quote, "kept exactly as the model gave it");
-        let QuoteCheck::Verified { start, end } = cf.check else { panic!("should verify") };
+        let QuoteCheck::Verified { start, end, .. } = cf.check else { panic!("should verify") };
         assert_eq!(slice(CH1, start, end), "said \u{201C}every family will be better off\u{201D}");
         assert_eq!(crate::quote_check::normalize(&slice(CH1, start, end)),
                    crate::quote_check::normalize(quote));
@@ -760,7 +819,7 @@ mod tests {
     fn mixed() -> FindingsAggregate {
         merge(vec![
             (0, f("F-01", "every family will be better off", "p1", "low")),
-            (0, f("F-01", "appeal to emotion", "p2", "high")),
+            (0, f("F-01", "appeal to emotion in this passage", "p2", "high")),
         ])
         .aggregate
     }
@@ -772,7 +831,7 @@ mod tests {
         let table = render_findings_table(&agg);
         assert!(table.starts_with("# Findings\n\nQuotes verified: 1 of 2\n"), "{table}");
         assert!(table.contains(&format!("- {VERIFIED} 1 (characters 19–50): \"every family will be better off\"")), "{table}");
-        assert!(table.contains(&format!("{NOT_FOUND} 1. Model's claimed quote (not found in chapter): \"appeal to emotion\"")), "{table}");
+        assert!(table.contains(&format!("{NOT_FOUND} (chapter 1). Model's claimed quote (not found in chapter): \"appeal to emotion in this passage\"")), "{table}");
         let json: serde_json::Value = serde_json::from_str(&render_findings_json(&agg)).unwrap();
         assert_eq!(json["quotes_verified"], 1);
         assert_eq!(json["quotes_total"], 2);
@@ -788,31 +847,91 @@ mod tests {
     fn the_claimed_quote_is_never_shown_as_evidence() {
         let agg = mixed();
         let table = render_findings_table(&agg);
-        for line in table.lines().filter(|l| l.contains("appeal to emotion")) {
+        for line in table.lines().filter(|l| l.contains("appeal to emotion in this passage")) {
             assert!(line.contains("Model's claimed quote (not found in chapter)"), "{line}");
             assert!(!line.contains(VERIFIED), "{line}");
         }
         assert!(table.contains("- Unsupported model inference (chapter 1, severity high): n"), "{table}");
         // The synthesis pass keeps the inference but is never handed the claim.
         let synth = render_synthesis_table(&agg);
-        assert!(!synth.contains("appeal to emotion"), "{synth}");
+        assert!(!synth.contains("appeal to emotion in this passage"), "{synth}");
         assert!(synth.contains("- Unsupported model inference (chapter 1, severity high): n"), "{synth}");
         assert!(synth.contains("every family will be better off"), "evidence still goes in");
         assert!(synth.starts_with("# Findings\n\nQuotes verified: 1 of 2\n"));
     }
 
     #[test]
+    fn a_too_short_quote_is_labelled_and_never_evidence() {
+        // Three words, and they ARE in chapter 1: still not evidence (F3).
+        let agg = merge(vec![
+            (0, f("F-01", "will be better", "p", "high")),
+            (0, f("F-01", "every family will be better off", "p", "low")),
+        ])
+        .aggregate;
+        assert_eq!(agg.findings[0].check, QuoteCheck::TooShort);
+        let r = &agg.rules[0];
+        assert_eq!((r.count, r.unsupported), (1, 1));
+        assert_eq!(r.max_severity, Severity::Low, "the too-short 'high' raises nothing");
+        assert_eq!(agg.per_rule_counts().get("F-01"), Some(&1));
+        assert_eq!(agg.quotes_header(), "Quotes verified: 1 of 2");
+        assert_eq!(agg.quotes_breakdown(), "Not verified: 0 not found in the chapter cited, 1 too short to verify.");
+        let table = render_findings_table(&agg);
+        assert!(table.contains(&format!("{TOO_SHORT} (chapter 1). Model's claimed quote (too short to verify): \"will be better\"")), "{table}");
+        assert!(table.starts_with("# Findings\n\nQuotes verified: 1 of 2\nNot verified: 0 not found"), "{table}");
+        let json: serde_json::Value = serde_json::from_str(&render_findings_json(&agg)).unwrap();
+        assert_eq!(json["findings"][0]["quote_check"], TOO_SHORT);
+        assert!(json["findings"][0]["source_offsets"].is_null());
+        assert_eq!((json["quotes_too_short"].as_u64(), json["quotes_not_found"].as_u64()), (Some(1), Some(0)));
+    }
+
+    #[test]
+    fn a_match_after_the_trailing_mark_retry_is_recorded() {
+        let agg = merge(vec![(0, f("F-01", "every family will be better off.", "p", "low"))]).aggregate;
+        let QuoteCheck::Verified { start, end, trailing_mark_removed } = agg.findings[0].check else {
+            panic!("should verify on the retry");
+        };
+        assert!(trailing_mark_removed);
+        assert_eq!(slice(CH1, start, end), "every family will be better off");
+        assert_eq!(agg.rules[0].count, 1, "a retry match is evidence");
+        let json: serde_json::Value = serde_json::from_str(&render_findings_json(&agg)).unwrap();
+        assert_eq!(json["findings"][0]["quote"], "every family will be better off.", "the model's quote is kept");
+        assert_eq!(json["findings"][0]["source_offsets"]["trailing_mark_removed"], true);
+        let exact = merge(vec![(0, f("F-01", "every family will be better off", "p", "low"))]).aggregate;
+        let json: serde_json::Value = serde_json::from_str(&render_findings_json(&exact)).unwrap();
+        assert_eq!(json["findings"][0]["source_offsets"]["trailing_mark_removed"], false);
+    }
+
+    #[test]
+    fn chapters_that_fell_back_to_prose_are_disclosed() {
+        let res = merge(vec![
+            (0, f("F-01", "every family will be better off", "p", "low")),
+            (1, "prose that is not JSON at all".to_string()),
+        ]);
+        let note = res.prose_fallback_note().expect("one chapter fell back");
+        assert!(note.starts_with("1 chapter analysis(es) did not parse"), "{note}");
+        assert!(note.contains(PROSE_DISCLOSURE));
+        let header = res.report_header();
+        assert!(header.starts_with("Quotes verified: 1 of 1\nNot verified: 0 not found"), "{header}");
+        assert!(header.ends_with(PROSE_DISCLOSURE), "{header}");
+        assert_eq!(unparsed_heading("chapter 2"), "Unparsed analysis of chapter 2 (prose; quotes not checked)");
+        // Control: no fallback, no note.
+        let clean = merge(vec![(0, f("F-01", "every family will be better off", "p", "low"))]);
+        assert!(clean.prose_fallback_note().is_none());
+        assert!(!clean.report_header().contains(PROSE_DISCLOSURE));
+    }
+
+    #[test]
     fn render_table_contains_rule_and_severity() {
-        let agg = merge(vec![(0, f("F-01", "left the room", "p1", "high"))]).aggregate;
+        let agg = merge(vec![(0, f("F-01", "and left the room", "p1", "high"))]).aggregate;
         let table = render_findings_table(&agg);
         assert!(table.contains("F-01"));
         assert!(table.contains("high"));
-        assert!(table.contains("left the room"));
+        assert!(table.contains("and left the room"));
     }
 
     #[test]
     fn render_json_is_valid_and_stable() {
-        let agg = merge(vec![(0, f("F-01", "left the room", "p1", "high"))]).aggregate;
+        let agg = merge(vec![(0, f("F-01", "and left the room", "p1", "high"))]).aggregate;
         let json = render_findings_json(&agg);
         // Round-trips as valid JSON.
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();

@@ -1,9 +1,10 @@
-//! A whole structured-findings run -- the GUI's own manifest builder and
-//! `ui::commands::start_run` -- with every quote checked against the chapter
-//! it cites (ASG-Q3). llama.cpp is replaced by a TEST DOUBLE that answers
-//! every chapter pass with two findings, one quoting the book and one
-//! quoting a sentence the book does not contain. Everything else is the
-//! product's.
+//! A whole run -- the GUI's own manifest builder and `ui::commands::start_run`
+//! -- with every quote checked against the chapter it cites (ASG-Q3). Nothing
+//! sets ASG_STRUCTURED_FINDINGS: structured findings are the default wherever
+//! llama supports grammars (manager ruling F1). llama.cpp is replaced by a
+//! TEST DOUBLE that answers every chapter pass with three findings: one
+//! quoting the book, one quoting a sentence the book does not contain, and
+//! one too short to verify (F3). Everything else is the product's.
 //!
 //! One test in its own binary: it points HOME and PATH at a temp directory,
 //! which is process-wide.
@@ -14,6 +15,8 @@ use std::path::{Path, PathBuf};
 
 const REAL_QUOTE: &str = "weigh the evidence, and distrust any claim";
 const INVENTED_QUOTE: &str = "the numbers were cooked from the start";
+/// In the book, but three words: too short to verify.
+const SHORT_QUOTE: &str = "weigh the evidence";
 
 /// `--help` advertises grammars, so the run takes the findings path. A pass
 /// with a grammar is a chapter pass: it answers findings.json. The one pass
@@ -91,7 +94,8 @@ fn every_quote_in_a_findings_run_is_checked_and_labelled() {
     write_exe(&llama_dir.join("llama-completion"), FAKE_LLAMA);
     let findings = serde_json::json!([
         {"rule_id": "FAL-01", "quote": REAL_QUOTE, "location": "p1", "severity": "low", "note": "real"},
-        {"rule_id": "FAL-02", "quote": INVENTED_QUOTE, "location": "p2", "severity": "high", "note": "invented"}
+        {"rule_id": "FAL-02", "quote": INVENTED_QUOTE, "location": "p2", "severity": "high", "note": "invented"},
+        {"rule_id": "FAL-02", "quote": SHORT_QUOTE, "location": "p3", "severity": "high", "note": "short"}
     ]);
     std::fs::write(llama_dir.join("findings.json"), findings.to_string()).unwrap();
     let assets = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/rag_defaults");
@@ -101,7 +105,8 @@ fn every_quote_in_a_findings_run_is_checked_and_labelled() {
     }
     std::env::set_var("HOME", &home);
     std::env::set_var("PATH", format!("{}:/usr/bin:/bin", root.join("bin").display()));
-    std::env::set_var("ASG_STRUCTURED_FINDINGS", "1");
+    // The default, not an opt-in (F1).
+    std::env::remove_var("ASG_STRUCTURED_FINDINGS");
     std::fs::File::create(root.join("models/model.gguf")).unwrap().set_len(64 << 20).unwrap();
     let text = "Chapter One\n\nThe argument of this chapter is that every reader should \
                 think for themselves, weigh the evidence, and distrust any claim that \
@@ -118,13 +123,20 @@ fn every_quote_in_a_findings_run_is_checked_and_labelled() {
     let all = json["findings"].as_array().unwrap();
     assert!(!all.is_empty(), "premise: chapter passes produced findings");
     assert_eq!(json["quotes_total"], all.len());
-    assert_eq!(json["quotes_verified"].as_u64().unwrap() * 2, all.len() as u64, "{json}");
+    let verified = json["quotes_verified"].as_u64().unwrap();
+    assert_eq!(verified * 3, all.len() as u64, "{json}");
+    assert_eq!(json["quotes_not_found"].as_u64(), Some(verified));
+    assert_eq!(json["quotes_too_short"].as_u64(), Some(verified));
     for f in all {
         match f["note"].as_str().unwrap() {
             "real" => {
                 assert_eq!(f["quote_check"], "Quote verified in chapter", "{f}");
                 assert!(f["source_offsets"]["end"].as_u64() > f["source_offsets"]["start"].as_u64(), "{f}");
                 assert_eq!(f["quote"], REAL_QUOTE, "kept exactly as given");
+            }
+            "short" => {
+                assert_eq!(f["quote_check"], "Quote too short to verify", "{f}");
+                assert!(f["source_offsets"].is_null(), "{f}");
             }
             _ => {
                 assert_eq!(f["quote_check"], "Quote not found in chapter", "{f}");
@@ -165,6 +177,17 @@ fn every_quote_in_a_findings_run_is_checked_and_labelled() {
     assert!(report.contains(&format!("Model's claimed quote (not found in chapter): \"{INVENTED_QUOTE}\"")), "{report}");
     assert!(!report.contains("\"rule_id\""), "raw findings JSON, unlabelled, reached the report: {report}");
     assert!(!report.contains("SYNTHESIS:"));
+
+    // ── Opted out: prose mode, and the report says its quotes are unchecked. ──
+    std::env::set_var("ASG_STRUCTURED_FINDINGS", "0");
+    std::env::set_var("FAKE_LLAMA_MODE", "ok");
+    let (result, run_dir) = run(&root, "opted-out");
+    assert!(result.is_ok(), "the run failed: {result:?}");
+    assert!(!run_dir.join("findings.json").exists(), "prose mode writes no findings");
+    let report = squash(&report_text(&run_dir));
+    let disclosure = squash(orchestrator::findings::PROSE_DISCLOSURE);
+    assert!(report.starts_with(&format!("AiSmartGuy \u{2014} Analysis Results {disclosure}")), "{report}");
+    std::env::remove_var("ASG_STRUCTURED_FINDINGS");
 
     let _ = std::fs::remove_dir_all(&root);
 }

@@ -120,9 +120,9 @@ mod tests {
     /// one rule with no category. No category name appears in the text, so
     /// the keyword heuristic would score it zero.
     const FINDINGS_OUTPUT: &str = r#"[
-        {"rule_id":"FAL-01","quote":"the first claim","location":"p1","severity":"high","note":"n"},
-        {"rule_id":"FAL-02","quote":"the second claim","location":"p2","severity":"low","note":"n"},
-        {"rule_id":"ZZZ-99","quote":"the third claim","location":"p3","severity":"low","note":"n"}
+        {"rule_id":"FAL-01","quote":"here is the first claim","location":"p1","severity":"high","note":"n"},
+        {"rule_id":"FAL-02","quote":"then the second claim","location":"p2","severity":"low","note":"n"},
+        {"rule_id":"ZZZ-99","quote":"last, the third claim","location":"p3","severity":"low","note":"n"}
     ]"#;
     /// The chapter those quotes come from, and one they do not.
     const CHAPTER: &str = "Here is the first claim. Then the second claim. Last, the third claim.";

@@ -107,7 +107,9 @@ fn a_run_the_gpu_refuses_finishes_on_the_cpu_with_its_synthesis() {
     }
     std::env::set_var("HOME", &home);
     std::env::set_var("PATH", format!("{}:/usr/bin:/bin", bin.display()));
-    std::env::remove_var("ASG_STRUCTURED_FINDINGS");
+    // Prose mode, as this test was written for: structured findings are now
+    // the default wherever llama supports grammars (manager ruling F1).
+    std::env::set_var("ASG_STRUCTURED_FINDINGS", "0");
 
     // A 64 MB (sparse) model, big enough that the GPU gets layers.
     std::fs::File::create(root.join("models/model.gguf")).unwrap().set_len(64 << 20).unwrap();

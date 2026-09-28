@@ -10,8 +10,9 @@
 //!       --pdf BOOK.pdf --lane MODEL_DIR [--fusion MODEL_DIR] [--mode 1|2] \
 //!       [--ctx N] [--throttle N] --out DIR
 //!
-//! Structured findings (Phase 2) are opt-in exactly as in the app:
-//! `ASG_STRUCTURED_FINDINGS=1` in the environment.
+//! Structured findings (Phase 2) are the default exactly as in the app,
+//! wherever the llama build supports grammars; `ASG_STRUCTURED_FINDINGS=0`
+//! opts out.
 
 use std::path::PathBuf;
 use std::time::Instant;

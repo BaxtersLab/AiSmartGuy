@@ -25,8 +25,9 @@ const SAFETY_PCT: usize = 10;
 /// Overlap between consecutive chapters (tokens).
 const CHAPTER_OVERLAP: usize = 200;
 
-/// Per-chapter analysis instruction for prose mode (the default — structured
-/// findings mode is opt-in via ASG_STRUCTURED_FINDINGS=1). Without this, the
+/// Per-chapter analysis instruction for prose mode (the fallback: structured
+/// findings are the default wherever the llama build supports grammars, see
+/// `findings_mode_from`). Without this, the
 /// prompt sent to `llama-completion` was just [RAG rule catalog] + [raw
 /// chapter text] with nothing telling the model what to do with either one.
 /// The directive alone was not enough: while `llama-completion` ran with
@@ -284,11 +285,12 @@ impl Orchestrator {
             ));
         }
 
-        // ── Phase 2: structured-findings mode (opt-in; requires grammar support) ─
-        // Default OFF — the prose pipeline below is unchanged. When
-        // ASG_STRUCTURED_FINDINGS=1 AND the llama build supports --grammar-file,
-        // per-chapter output becomes a JSON findings array that we merge
-        // losslessly (replacing the prose fold). Falls back to prose otherwise.
+        // ── Phase 2: structured-findings mode (the default; needs grammars) ────
+        // Manager ruling F1 (2026-09-28): structured findings are the default
+        // wherever the selected llama build supports --grammar-file, so every
+        // quote is checked against its chapter. ASG_STRUCTURED_FINDINGS=0 opts
+        // out. Without grammar support the run falls back to prose, and the
+        // report says prominently that prose quotes are not checked.
         let findings_grammar: Option<PathBuf> = if findings_mode_enabled()
             && model_loader::llama_detect::llama_supports_grammar()
         {
@@ -635,16 +637,7 @@ impl Orchestrator {
                 // per-chapter prose (the existing hierarchical fold). The table
                 // given to the synthesis leaves out unsupported claimed quotes.
                 let fusion_input = if let Some(merged) = &checked {
-                    // Synthesis input: the compact table as one block, plus any
-                    // unparsed analyses as extra blocks so nothing is dropped.
-                    let mut blocks = vec![(
-                        "Findings table".to_string(),
-                        crate::findings::render_synthesis_table(&merged.aggregate),
-                    )];
-                    for (label, prose) in &merged.parse_failures {
-                        blocks.push((format!("Unparsed analysis of {label}"), prose.clone()));
-                    }
-                    FusionInput { blocks }
+                    FusionInput { blocks: synthesis_blocks(merged) }
                 } else {
                     FusionInput { blocks: fold_blocks(&chapter_outputs) }
                 };
@@ -723,34 +716,19 @@ impl Orchestrator {
             .as_ref()
             .and_then(|p| std::fs::read_to_string(p).ok())
             .filter(|t| !t.trim().is_empty());
-        let results_text = match (synthesis, &checked) {
-            // The quote count heads the report (ASG-Q3).
-            (Some(text), Some(merged)) => {
-                format!("{}\n\n{}", merged.aggregate.quotes_header(), text)
-            }
-            (Some(text), None) => text,
-            // No synthesis in findings mode: the checked table is the report,
-            // never the raw findings JSON, whose quotes carry no label.
-            (None, Some(merged)) => report_from_checked_findings(merged),
-            (None, None) => {
-                // No fusion output — aggregate individual model chunk outputs.
-                let titles: Vec<String> = chapters
-                    .iter()
-                    .enumerate()
-                    .map(|(i, c)| if c.title.is_empty() {
-                        format!("Chapter {}", i + 1)
-                    } else {
-                        c.title.clone()
-                    })
-                    .collect();
-                let combined = combine_outputs_without_fusion(&chapter_outputs, &titles);
-                if combined.trim().is_empty() {
-                    "Run complete. No inference output was produced.".to_string()
+        let results_text = compose_report(synthesis, checked.as_ref(), || {
+            // No fusion output — aggregate individual model chunk outputs.
+            let titles: Vec<String> = chapters
+                .iter()
+                .enumerate()
+                .map(|(i, c)| if c.title.is_empty() {
+                    format!("Chapter {}", i + 1)
                 } else {
-                    combined
-                }
-            }
-        };
+                    c.title.clone()
+                })
+                .collect();
+            combine_outputs_without_fusion(&chapter_outputs, &titles)
+        });
 
         let manifest_json = manifest::serialize(&self.manifest)
             .map_err(|e| OrchestratorError::ManifestError(format!("{:?}", e)))?;
@@ -834,14 +812,59 @@ fn quote_sources(chapters: &[pdf_io::Chapter]) -> Vec<&str> {
     chapters.iter().map(|c| c.body()).collect()
 }
 
+/// The synthesis input in findings mode: the compact table as one block, plus
+/// any analysis that did not parse as its own block, headed as unchecked
+/// prose (F1), so nothing is dropped.
+fn synthesis_blocks(merged: &crate::findings::MergeResult) -> Vec<(String, String)> {
+    let mut blocks = vec![(
+        "Findings table".to_string(),
+        crate::findings::render_synthesis_table(&merged.aggregate),
+    )];
+    for (label, prose) in &merged.parse_failures {
+        blocks.push((crate::findings::unparsed_heading(label), prose.clone()));
+    }
+    blocks
+}
+
+/// The report text for every combination of synthesis and findings mode.
+/// Findings mode heads it with the quote counts (ASG-Q3) and, when chapters
+/// fell back to prose, the note that their quotes are not checked (F1).
+/// Prose mode heads it with the disclosure. `prose_outputs` is called only
+/// when there is neither a synthesis nor a findings merge.
+fn compose_report(
+    synthesis: Option<String>,
+    checked: Option<&crate::findings::MergeResult>,
+    prose_outputs: impl FnOnce() -> String,
+) -> String {
+    use crate::findings::PROSE_DISCLOSURE;
+    match (synthesis, checked) {
+        (Some(text), Some(merged)) => format!("{}\n\n{}", merged.report_header(), text),
+        (Some(text), None) => format!("{PROSE_DISCLOSURE}\n\n{text}"),
+        // No synthesis in findings mode: the checked table is the report,
+        // never the raw findings JSON, whose quotes carry no label.
+        (None, Some(merged)) => report_from_checked_findings(merged),
+        (None, None) => {
+            let combined = prose_outputs();
+            if combined.trim().is_empty() {
+                "Run complete. No inference output was produced.".to_string()
+            } else {
+                format!("{PROSE_DISCLOSURE}\n\n{combined}")
+            }
+        }
+    }
+}
+
 /// The report body when findings were merged but no synthesis ran: the
 /// checked table, then any analyses that did not parse as findings.
 fn report_from_checked_findings(merged: &crate::findings::MergeResult) -> String {
     let mut text = crate::findings::render_findings_table(&merged.aggregate);
+    if let Some(note) = merged.prose_fallback_note() {
+        text.push_str(&format!("\n{note}\n"));
+    }
     for (label, prose) in &merged.parse_failures {
         let cleaned = strip_llama_noise(prose);
         if !cleaned.trim().is_empty() {
-            text.push_str(&format!("\n## Unparsed analysis of {label}\n\n{}\n", cleaned.trim()));
+            text.push_str(&format!("\n## {}\n\n{}\n", crate::findings::unparsed_heading(label), cleaned.trim()));
         }
     }
     text
@@ -966,13 +989,15 @@ fn findings_rule_category_map(model_paths: &[String]) -> HashMap<String, String>
     map
 }
 
-/// True if Phase 2 structured-findings mode is requested via
-/// `ASG_STRUCTURED_FINDINGS=1` (or `true`). Off by default — the prose pipeline
-/// is unchanged unless explicitly opted in AND the llama build supports grammars.
+/// Whether structured findings are wanted. They are the default (manager
+/// ruling F1, 2026-09-28): only `ASG_STRUCTURED_FINDINGS=0` or `false` opts out.
+/// They still run only where the llama build supports grammars.
 fn findings_mode_enabled() -> bool {
-    std::env::var("ASG_STRUCTURED_FINDINGS")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
+    findings_mode_from(std::env::var("ASG_STRUCTURED_FINDINGS").ok().as_deref())
+}
+
+fn findings_mode_from(value: Option<&str>) -> bool {
+    !matches!(value.map(str::trim), Some(v) if v == "0" || v.eq_ignore_ascii_case("false"))
 }
 
 /// Strip llama-cli noise from inference output (banner art, "Loading model...",
@@ -1205,6 +1230,71 @@ mod multi_pass_label_tests {
             .map(|(l, _)| l)
             .collect();
         assert_eq!(labels, ["chapter 1", "chapter 1", "chapter 2", "chapter 2"]);
+    }
+
+    /// F1: structured findings are the default; only an explicit 0/false opts out.
+    #[test]
+    fn structured_findings_are_the_default() {
+        assert!(findings_mode_from(None), "unset: structured");
+        for on in ["1", "true", "yes", ""] {
+            assert!(findings_mode_from(Some(on)), "{on:?}");
+        }
+        for off in ["0", "false", "FALSE", " 0 "] {
+            assert!(!findings_mode_from(Some(off)), "{off:?}");
+        }
+    }
+
+    fn merged_with_one_prose_chapter() -> crate::findings::MergeResult {
+        let finding = r#"[{"rule_id":"F-01","quote":"remember the keyword BANANA","location":"p","severity":"low","note":"n"}]"#;
+        crate::findings::merge_findings(
+            &[(0, finding.to_string()), (1, "The chapter argues from authority.".to_string())],
+            &["remember the keyword BANANA here", "The second chapter."],
+        )
+    }
+
+    /// Every arm of the report: counts and the fallback note with a synthesis
+    /// in findings mode; the disclosure first in prose mode, with or without one.
+    #[test]
+    fn every_report_says_what_its_quotes_are() {
+        use crate::findings::PROSE_DISCLOSURE;
+        let merged = merged_with_one_prose_chapter();
+        let r = compose_report(Some("SYNTH".into()), Some(&merged), || unreachable!());
+        assert!(r.starts_with("Quotes verified: 1 of 1\nNot verified: 0 not found"), "{r}");
+        assert!(r.contains(&merged.prose_fallback_note().unwrap()), "{r}");
+        assert!(r.ends_with("\n\nSYNTH"), "{r}");
+        let r = compose_report(Some("SYNTH".into()), None, || unreachable!());
+        assert_eq!(r, format!("{PROSE_DISCLOSURE}\n\nSYNTH"));
+        let r = compose_report(None, None, || "PROSE".into());
+        assert_eq!(r, format!("{PROSE_DISCLOSURE}\n\nPROSE"));
+        let r = compose_report(None, None, || "  ".into());
+        assert_eq!(r, "Run complete. No inference output was produced.");
+        let r = compose_report(None, Some(&merged), || unreachable!());
+        assert!(r.starts_with("# Findings\n\nQuotes verified: 1 of 1"), "{r}");
+    }
+
+    /// F1: the synthesis model is told which analyses are unchecked prose.
+    #[test]
+    fn the_synthesis_input_marks_prose_fallback() {
+        let blocks = synthesis_blocks(&merged_with_one_prose_chapter());
+        let headings: Vec<&str> = blocks.iter().map(|(h, _)| h.as_str()).collect();
+        assert_eq!(headings, ["Findings table", "Unparsed analysis of chapter 2 (prose; quotes not checked)"]);
+    }
+
+    /// F1: without a synthesis, a chapter that fell back to prose is shown
+    /// under a heading that says its quotes are not checked, after the note.
+    #[test]
+    fn a_report_without_synthesis_discloses_prose_fallback() {
+        let finding = r#"[{"rule_id":"F-01","quote":"remember the keyword BANANA","location":"p","severity":"low","note":"n"}]"#;
+        let merged = crate::findings::merge_findings(
+            &[(0, finding.to_string()), (1, "The chapter argues from authority.".to_string())],
+            &["remember the keyword BANANA here", "The second chapter."],
+        );
+        let report = report_from_checked_findings(&merged);
+        let note = merged.prose_fallback_note().unwrap();
+        let heading = "## Unparsed analysis of chapter 2 (prose; quotes not checked)";
+        assert!(report.contains(&note), "{report}");
+        assert!(report.find(&note) < report.find(heading), "note before the prose: {report}");
+        assert!(report.contains("The chapter argues from authority."));
     }
 
     /// A quote from the preamble carried into chapter 2 is chapter 1's text:

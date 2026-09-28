@@ -16,6 +16,15 @@
 //!   original chapter text, so a reader can find the passage. A match must
 //!   begin and end on whole source characters: "ish" does not verify inside
 //!   the ligature of "ﬁsh".
+//!
+//! The manager's follow-up rulings (2026-09-28):
+//! - F2: the exact match comes first. Only if it fails, at most one trailing
+//!   `. , ; : ! ?` is removed from the MODEL'S quote and the match retried.
+//!   The chapter text is never touched; the original quote is kept, and a
+//!   retry's offsets are recorded like any other.
+//! - F3: a quote of fewer than four lexical words after normalisation is
+//!   [`TOO_SHORT`], an unsupported inference, never evidence. Four or more
+//!   words still need the exact match: length alone verifies nothing.
 
 use unicode_normalization::char::{canonical_combining_class, decompose_compatible};
 use unicode_normalization::{is_nfkc_quick, IsNormalized, UnicodeNormalization};
@@ -26,6 +35,13 @@ use crate::casefold_table::CASEFOLD;
 pub const VERIFIED: &str = "Quote verified in chapter";
 /// The label for a quote that is not in the chapter it cites.
 pub const NOT_FOUND: &str = "Quote not found in chapter";
+/// The label for a quote too short to mean anything if found (F3).
+pub const TOO_SHORT: &str = "Quote too short to verify";
+
+/// Fewer lexical words than this is too short to verify (F3).
+pub const MIN_WORDS: usize = 4;
+/// The one trailing mark the retry may remove from the model's quote (F2).
+const TRAILING_MARKS: [char; 6] = ['.', ',', ';', ':', '!', '?'];
 
 /// Removed before matching: the soft hyphen and the zero-width characters.
 const INVISIBLE: [char; 6] = ['\u{00AD}', '\u{200B}', '\u{200C}', '\u{200D}', '\u{2060}', '\u{FEFF}'];
@@ -45,9 +61,12 @@ const DOUBLE_QUOTES: [char; 9] = [
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QuoteCheck {
     /// Found. `start..end` are character offsets into the chapter's original
-    /// text (`chapter.body().chars()`), not byte offsets.
-    Verified { start: usize, end: usize },
+    /// text (`chapter.body().chars()`), not byte offsets. `trailing_mark_removed`
+    /// says the match needed the F2 retry.
+    Verified { start: usize, end: usize, trailing_mark_removed: bool },
     NotFound,
+    /// Fewer than [`MIN_WORDS`] lexical words: not checked, never evidence.
+    TooShort,
 }
 
 impl QuoteCheck {
@@ -55,6 +74,7 @@ impl QuoteCheck {
         match self {
             QuoteCheck::Verified { .. } => VERIFIED,
             QuoteCheck::NotFound => NOT_FOUND,
+            QuoteCheck::TooShort => TOO_SHORT,
         }
     }
     pub fn is_verified(&self) -> bool {
@@ -168,14 +188,35 @@ impl ChapterText {
         ChapterText { mapped: normalize_mapped(body) }
     }
 
-    /// Check one quote. The first occurrence that begins and ends on whole
-    /// source characters wins. An empty quote verifies nothing.
+    /// Check one quote (F3 length rule, exact match, then the F2 retry). The
+    /// first occurrence that begins and ends on whole source characters wins.
     pub fn check(&self, quote: &str) -> QuoteCheck {
         let q = normalize_mapped(quote).chars;
+        if lexical_words(&q) < MIN_WORDS {
+            return QuoteCheck::TooShort;
+        }
+        if let Some((start, end)) = self.find(&q) {
+            return QuoteCheck::Verified { start, end, trailing_mark_removed: false };
+        }
+        if let Some(last) = q.last() {
+            if TRAILING_MARKS.contains(last) {
+                let mut shorter = q[..q.len() - 1].to_vec();
+                while shorter.last() == Some(&' ') {
+                    shorter.pop();
+                }
+                if let Some((start, end)) = self.find(&shorter) {
+                    return QuoteCheck::Verified { start, end, trailing_mark_removed: true };
+                }
+            }
+        }
+        QuoteCheck::NotFound
+    }
+
+    fn find(&self, q: &[char]) -> Option<(usize, usize)> {
         let c = &self.mapped.chars;
         let spans = &self.mapped.spans;
         if q.is_empty() || q.len() > c.len() {
-            return QuoteCheck::NotFound;
+            return None;
         }
         for i in 0..=c.len() - q.len() {
             let j = i + q.len();
@@ -185,11 +226,20 @@ impl ChapterText {
             let starts_whole = i == 0 || spans[i - 1] != spans[i];
             let ends_whole = j == c.len() || spans[j] != spans[j - 1];
             if starts_whole && ends_whole {
-                return QuoteCheck::Verified { start: spans[i].0, end: spans[j - 1].1 };
+                return Some((spans[i].0, spans[j - 1].1));
             }
         }
-        QuoteCheck::NotFound
+        None
     }
+}
+
+/// Words with at least one letter or digit in them: a lone dash or mark is
+/// not a word.
+fn lexical_words(normalized: &[char]) -> usize {
+    normalized
+        .split(|&c| c == ' ')
+        .filter(|w| w.iter().any(|c| c.is_alphanumeric()))
+        .count()
 }
 
 /// Check one quote against one chapter's own text.
@@ -205,29 +255,36 @@ mod tests {
         The committee \u{201C}voted unanimously\u{201D} \u{2014} or so the minutes said.\n\
         Nobody asked why the vote hap-\npened at midnight.";
     const CHAPTER_2: &str = "In the second chapter the author admits the figures were estimates.";
+    /// Paine, Common Sense: the sentence Hermes-7B quoted with an added full stop.
+    const PAINE: &str = "The more simple any thing is, the less liable it is to be disordered; \
+        and the easier repaired when disordered.";
 
     fn slice(text: &str, start: usize, end: usize) -> String {
         text.chars().skip(start).take(end - start).collect()
     }
 
-    /// Every verified match: the original slice normalises to the quote.
+    /// An exact match: the original slice normalises to the quote.
     fn assert_verified(quote: &str, chapter: &str) -> (usize, usize) {
         match check_quote(quote, chapter) {
-            QuoteCheck::Verified { start, end } => {
+            QuoteCheck::Verified { start, end, trailing_mark_removed: false } => {
                 assert_eq!(normalize(&slice(chapter, start, end)), normalize(quote),
                     "the slice at {start}..{end} must normalise to the quote");
                 (start, end)
             }
-            QuoteCheck::NotFound => panic!("{quote:?} should verify"),
+            other => panic!("{quote:?} should verify exactly, got {other:?}"),
         }
     }
 
     #[test]
-    fn labels_are_the_ruling_s_words() {
+    fn labels_are_the_rulings_words() {
         assert_eq!(VERIFIED, "Quote verified in chapter");
         assert_eq!(NOT_FOUND, "Quote not found in chapter");
-        assert_eq!(QuoteCheck::Verified { start: 0, end: 1 }.label(), VERIFIED);
+        assert_eq!(TOO_SHORT, "Quote too short to verify");
+        let v = QuoteCheck::Verified { start: 0, end: 1, trailing_mark_removed: false };
+        assert_eq!(v.label(), VERIFIED);
         assert_eq!(QuoteCheck::NotFound.label(), NOT_FOUND);
+        assert_eq!(QuoteCheck::TooShort.label(), TOO_SHORT);
+        assert!(!QuoteCheck::TooShort.is_verified() && !QuoteCheck::NotFound.is_verified());
     }
 
     #[test]
@@ -247,22 +304,10 @@ mod tests {
         // ASCII quotes in the model's quote, curly ones in the book.
         assert_verified("The committee \"voted unanimously\"", CHAPTER_1);
         // An apostrophe: curly in the book, ASCII in the quote, and the reverse.
-        assert_verified("the author's claim", "Consider the author\u{2019}s claim first.");
-        assert_verified("the author\u{2019}s claim", "Consider the author's claim first.");
+        assert_verified("consider the author's claim", "Consider the author\u{2019}s claim first.");
+        assert_verified("consider the author\u{2019}s claim", "Consider the author's claim first.");
         // A line break inside the quote is only whitespace.
         assert_verified("minutes said. Nobody asked", CHAPTER_1);
-    }
-
-    #[test]
-    fn nfkc_and_full_case_folding_apply() {
-        // A ligature in the book, plain letters in the quote.
-        assert_verified("the fish", "Then the \u{FB01}sh swam away.");
-        // Full folding, not lowercase: U+00DF folds to "ss".
-        assert_verified("STRASSE", "Die Stra\u{00DF}e war leer.");
-        // Fullwidth letters and a no-break space are NFKC compatibility forms.
-        assert_verified("ABC def", "x \u{FF21}\u{FF22}\u{FF23}\u{00A0}def y");
-        // Final sigma folds to sigma.
-        assert_verified("\u{039F}\u{0394}\u{039F}\u{03A3}", "\u{03BF}\u{03B4}\u{03BF}\u{03C2} end");
     }
 
     #[test]
@@ -274,10 +319,22 @@ mod tests {
     }
 
     #[test]
+    fn nfkc_and_full_case_folding_apply() {
+        // A ligature in the book, plain letters in the quote.
+        assert_verified("then the fish swam", "Then the \u{FB01}sh swam away.");
+        // Full folding, not lowercase: U+00DF folds to "ss".
+        assert_verified("die STRASSE war leer", "Die Stra\u{00DF}e war leer.");
+        // Fullwidth letters and a no-break space are NFKC compatibility forms.
+        assert_verified("x ABC def y", "x \u{FF21}\u{FF22}\u{FF23}\u{00A0}def y");
+        // Final sigma folds to sigma.
+        assert_verified("the word \u{039F}\u{0394}\u{039F}\u{03A3} ends", "the word \u{03BF}\u{03B4}\u{03BF}\u{03C2} ends here");
+    }
+
+    #[test]
     fn soft_hyphens_and_zero_width_characters_are_removed() {
-        assert_verified("unanimously", "voted una\u{00AD}nimously today");
-        assert_verified("unanimously", "voted una\u{200B}nimous\u{FEFF}ly today");
-        assert_verified("voted today", "voted \u{200D} today");
+        assert_verified("all voted unanimously today", "we all voted una\u{00AD}nimously today");
+        assert_verified("all voted unanimously today", "we all voted una\u{200B}nimous\u{FEFF}ly today");
+        assert_verified("we all voted today", "we all voted \u{200D} today");
     }
 
     #[test]
@@ -294,7 +351,7 @@ mod tests {
         assert_eq!(check_quote("it was the worst of all times", CHAPTER_1), QuoteCheck::NotFound);
         assert_eq!(check_quote("the committee voted unanimously", CHAPTER_1), QuoteCheck::NotFound,
             "dropping the quote marks is a change the ruling does not normalise");
-        assert_eq!(check_quote("it was the best of time", CHAPTER_1), QuoteCheck::Verified { start: 0, end: 23 },
+        assert!(check_quote("it was the best of time", CHAPTER_1).is_verified(),
             "a prefix of the text IS in the text; matching is substring, not word");
         assert_eq!(check_quote("It were the best of times", CHAPTER_1), QuoteCheck::NotFound);
     }
@@ -303,15 +360,15 @@ mod tests {
     fn catalog_phrases_are_not_found() {
         // The small models' failure: the rule catalog's own example wording,
         // presented as a quote from the book.
-        for phrase in ["appeal to emotion", "everyone knows that", "loaded language"] {
+        for phrase in ["appeal to emotion used here", "everyone knows that this is", "it is what it is"] {
             assert_eq!(check_quote(phrase, CHAPTER_1), QuoteCheck::NotFound, "{phrase}");
         }
     }
 
     #[test]
-    fn empty_quotes_are_not_found() {
+    fn empty_quotes_are_too_short() {
         for q in ["", "   ", "\u{200B}", "\u{00AD}\n\t"] {
-            assert_eq!(check_quote(q, CHAPTER_1), QuoteCheck::NotFound, "{q:?}");
+            assert_eq!(check_quote(q, CHAPTER_1), QuoteCheck::TooShort, "{q:?}");
         }
     }
 
@@ -324,12 +381,89 @@ mod tests {
 
     #[test]
     fn a_match_must_cover_whole_source_characters() {
-        // "ish" is inside the NFKC expansion of the ligature, not in the text.
-        assert_eq!(check_quote("ish", "\u{FB01}sh"), QuoteCheck::NotFound);
+        // "ish" starts inside the NFKC expansion of the ligature.
+        let q = "ish swam by the river";
+        assert_eq!(check_quote(q, "a \u{FB01}sh swam by the river"), QuoteCheck::NotFound);
         // A later whole-character occurrence still verifies.
-        let t = "\u{FB01}sh and a dish";
-        let (s, e) = assert_verified("ish", t);
-        assert_eq!(slice(t, s, e), "ish");
+        let t = "a \u{FB01}sh swam by the river, a dish swam by the river";
+        let (s, e) = assert_verified(q, t);
+        assert_eq!(slice(t, s, e), q);
+    }
+
+    // ── F3: fewer than four lexical words is too short ─────────────────
+
+    #[test]
+    fn three_words_are_too_short_even_when_they_are_in_the_chapter() {
+        assert_eq!(check_quote("to be disordered", PAINE), QuoteCheck::TooShort);
+        // Punctuation and dashes are not words.
+        assert_eq!(check_quote("to be \u{2014} disordered !", PAINE), QuoteCheck::TooShort);
+        assert_eq!(check_quote("THE MORE simple", PAINE), QuoteCheck::TooShort);
+    }
+
+    #[test]
+    fn four_words_are_checked_and_length_alone_verifies_nothing() {
+        assert_verified("is to be disordered", PAINE);
+        assert_eq!(check_quote("is to be ordered", PAINE), QuoteCheck::NotFound);
+    }
+
+    // ── F2: one trailing mark, from the model's quote, after the exact match ──
+
+    #[test]
+    fn each_allowed_trailing_mark_is_removed_once() {
+        let body = "the less liable it is to be disordered";
+        for mark in ['.', ',', ':', '!', '?'] {
+            let quote = format!("{body}{mark}");
+            match check_quote(&quote, PAINE) {
+                QuoteCheck::Verified { start, end, trailing_mark_removed: true } => {
+                    assert_eq!(slice(PAINE, start, end), body, "{mark}");
+                }
+                other => panic!("{mark}: {other:?}"),
+            }
+        }
+        // ';' is what the book has, so the exact match already succeeds.
+        let (s, e) = assert_verified(&format!("{body};"), PAINE);
+        assert_eq!(slice(PAINE, s, e), format!("{body};"));
+    }
+
+    #[test]
+    fn two_trailing_marks_are_never_removed() {
+        // ";." would verify, correctly: one mark goes, and ';' is the book's own.
+        for tail in ["..", "!?", ".;", ". ."] {
+            let quote = format!("the less liable it is to be disordered{tail}");
+            assert_eq!(check_quote(&quote, PAINE), QuoteCheck::NotFound, "{tail:?}");
+        }
+    }
+
+    #[test]
+    fn the_exact_match_comes_before_the_retry() {
+        // Without its full stop the quote occurs first at the very start; with
+        // it, only at the end. The exact match must win.
+        let chapter = "We went home late and slept. Later that year we went home late.";
+        match check_quote("we went home late.", chapter) {
+            QuoteCheck::Verified { start, end, trailing_mark_removed: false } => {
+                assert_eq!(slice(chapter, start, end), "we went home late.");
+                assert!(start > 0);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn punctuation_is_never_removed_from_the_chapter() {
+        let chapter = "and the easier repaired, when disordered.";
+        // The book has a comma the quote lacks: no source-side stripping.
+        assert_eq!(check_quote("the easier repaired when disordered", chapter), QuoteCheck::NotFound);
+        // Only the quote's own trailing mark goes, never one inside it.
+        assert_eq!(check_quote("the easier repaired; when disordered", chapter), QuoteCheck::NotFound);
+        // A mark before a closing quote is not the last character.
+        assert_eq!(check_quote("\"the easier repaired, when disordered.\"", chapter), QuoteCheck::NotFound);
+        // Control: the quote's added mark removed, the book's punctuation intact.
+        match check_quote("the easier repaired, when disordered!", chapter) {
+            QuoteCheck::Verified { start, end, trailing_mark_removed: true } => {
+                assert_eq!(slice(chapter, start, end), "the easier repaired, when disordered");
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

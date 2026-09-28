@@ -108,7 +108,9 @@ fn a_terminated_run_says_so_and_stops() {
     }
     std::env::set_var("HOME", &home);
     std::env::set_var("PATH", "/usr/bin:/bin");
-    std::env::remove_var("ASG_STRUCTURED_FINDINGS");
+    // Prose mode, as this test was written for: structured findings are now
+    // the default wherever llama supports grammars (manager ruling F1).
+    std::env::set_var("ASG_STRUCTURED_FINDINGS", "0");
     std::fs::File::create(root.join("models/model.gguf")).unwrap().set_len(64 << 20).unwrap();
     let text = "Chapter One\n\nEvery reader should weigh the evidence and distrust a claim \
                 that arrives without its reasons.\n".repeat(20);
