@@ -36,9 +36,10 @@ fn wrap_line(line: &str, max_chars: usize) -> Vec<String> {
             }
             if current.is_empty() {
                 // The word alone doesn't fit — hard-break it. Width stays in
-                // bytes (escape_pdf_str draws one glyph per byte), but the cut
-                // must land on a char boundary: a byte-indexed split inside a
-                // multi-byte character (an em dash, say) panics.
+                // bytes, never fewer than the glyphs drawn (win_ansi draws one
+                // per character), but the cut must land on a char boundary: a
+                // byte-indexed split inside a multi-byte character (an em
+                // dash, say) panics.
                 let mut cut = max_chars.min(word.len());
                 while !word.is_char_boundary(cut) {
                     cut -= 1;
@@ -97,12 +98,16 @@ pub fn write_final_pdf_versioned(
     // carries the free entry 0.
     doc.reference_table.cross_reference_type = lopdf::xref::XrefType::CrossReferenceTable;
 
-    // Built-in Helvetica font — no embedding required
+    // Built-in Helvetica font — no embedding required. WinAnsiEncoding, so
+    // the bytes win_ansi writes draw curly quotes, dashes and accented
+    // letters; with no /Encoding they fell back to StandardEncoding, which
+    // dropped them or drew other glyphs.
     let font_id = doc.add_object(Object::Dictionary({
         let mut d = Dictionary::new();
         d.set("Type", Object::Name(b"Font".to_vec()));
         d.set("Subtype", Object::Name(b"Type1".to_vec()));
         d.set("BaseFont", Object::Name(b"Helvetica".to_vec()));
+        d.set("Encoding", Object::Name(b"WinAnsiEncoding".to_vec()));
         d
     }));
 
@@ -227,17 +232,29 @@ fn make_page(
     })
 }
 
-fn escape_pdf_str(s: &str) -> Vec<u8> {
-    let mut out = Vec::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'\\' => { out.push(b'\\'); out.push(b'\\'); }
-            b'('  => { out.push(b'\\'); out.push(b'('); }
-            b')'  => { out.push(b'\\'); out.push(b')'); }
-            other => out.push(other),
-        }
-    }
-    out
+/// Text as WinAnsiEncoding bytes, the encoding the report font declares: one
+/// byte per character. A character outside it becomes '?', visibly.
+///
+/// Nothing is escaped here. lopdf escapes backslashes and parentheses when it
+/// writes a literal string, so escaping here as well drew a backslash before
+/// every parenthesis of every report ("Model's claimed quote \(not found in
+/// chapter\)").
+fn win_ansi(s: &str) -> Vec<u8> {
+    s.chars()
+        .map(|c| match c {
+            ' '..='~' => c as u8,
+            '\u{A0}'..='\u{FF}' => c as u8,
+            '\t' => b' ',
+            '\u{20AC}' => 0x80, '\u{201A}' => 0x82, '\u{0192}' => 0x83, '\u{201E}' => 0x84,
+            '\u{2026}' => 0x85, '\u{2020}' => 0x86, '\u{2021}' => 0x87, '\u{02C6}' => 0x88,
+            '\u{2030}' => 0x89, '\u{0160}' => 0x8A, '\u{2039}' => 0x8B, '\u{0152}' => 0x8C,
+            '\u{017D}' => 0x8E, '\u{2018}' => 0x91, '\u{2019}' => 0x92, '\u{201C}' => 0x93,
+            '\u{201D}' => 0x94, '\u{2022}' => 0x95, '\u{2013}' => 0x96, '\u{2014}' => 0x97,
+            '\u{02DC}' => 0x98, '\u{2122}' => 0x99, '\u{0161}' => 0x9A, '\u{203A}' => 0x9B,
+            '\u{0153}' => 0x9C, '\u{017E}' => 0x9E, '\u{0178}' => 0x9F,
+            _ => b'?',
+        })
+        .collect()
 }
 
 fn build_text_content(title: &str, body: &str) -> Result<Vec<u8>, PdfIoError> {
@@ -256,7 +273,7 @@ fn build_text_content(title: &str, body: &str) -> Result<Vec<u8>, PdfIoError> {
     ));
     ops.push(Operation::new(
         "Tj",
-        vec![Object::String(escape_pdf_str(title), lopdf::StringFormat::Literal)],
+        vec![Object::String(win_ansi(title), lopdf::StringFormat::Literal)],
     ));
 
     // Switch to 10pt for body
@@ -272,7 +289,7 @@ fn build_text_content(title: &str, body: &str) -> Result<Vec<u8>, PdfIoError> {
     for line in body.lines() {
         ops.push(Operation::new(
             "Tj",
-            vec![Object::String(escape_pdf_str(line), lopdf::StringFormat::Literal)],
+            vec![Object::String(win_ansi(line), lopdf::StringFormat::Literal)],
         ));
         ops.push(Operation::new(
             "Td",
@@ -433,5 +450,54 @@ mod wrap_tests {
         let decoded = base64::engine::general_purpose::STANDARD
             .decode(meta.manifest_base64.expect("manifest in /Info")).unwrap();
         assert_eq!(String::from_utf8(decoded).unwrap(), manifest);
+    }
+
+    const AS_WRITTEN: [&str; 4] = [
+        "Model's claimed quote (not found in chapter): \"x\" and a\\b",
+        "curly \u{201C}quoted\u{201D} it\u{2019}s \u{2018}so\u{2019}",
+        "accents caf\u{E9} na\u{EF}ve \u{C5}ngstr\u{F6}m",
+        "dashes a\u{2014}b c\u{2013}d, euro \u{20AC}5, ellipsis\u{2026}",
+    ];
+
+    /// What a reader sees, read back by poppler and by the app's own reader:
+    /// parentheses and backslashes once, and curly quotes, dashes and accented
+    /// letters as written. The writer escaped twice (every "(" drawn as "\(")
+    /// and declared no encoding (curly quotes and dashes dropped, "café"
+    /// drawn as "cafˆ'"). Fails closed if pdftotext is missing.
+    #[test]
+    fn report_text_reads_back_as_written() {
+        let dir = std::env::temp_dir().join(format!("asg_pdf_text_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("report.pdf");
+        write_final_pdf(Path::new("unused.pdf"), &AS_WRITTEN.join("\n"), "{}", &out).unwrap();
+        let poppler = std::process::Command::new("pdftotext").arg(&out).arg("-").output()
+            .expect("pdftotext (poppler-utils) is required for this test");
+        let own = crate::extract_text(&out).map(|p| p.pages.join("\n"));
+        let _ = std::fs::remove_dir_all(&dir);
+        let poppler = String::from_utf8(poppler.stdout).unwrap();
+        let own = own.unwrap();
+        for line in AS_WRITTEN {
+            assert!(poppler.contains(line), "poppler read {poppler:?}, not {line:?}");
+            assert!(own.contains(line), "the app read {own:?}, not {line:?}");
+        }
+    }
+
+    #[test]
+    fn characters_outside_win_ansi_become_a_visible_question_mark() {
+        assert_eq!(win_ansi("Greek \u{3B1}\u{3B2} ok"), b"Greek ?? ok".to_vec());
+        assert_eq!(win_ansi("tab\there"), b"tab here".to_vec());
+        assert_eq!(win_ansi("(a) b\\c"), b"(a) b\\c".to_vec(), "nothing escaped here");
+        // Each mapped character has its own byte (tab shares the space's).
+        let mapped: Vec<u8> = ('\u{0}'..='\u{FFFF}')
+            .filter(|&c| c != '?')
+            .map(|c| win_ansi(&c.to_string()))
+            .filter(|b| b != b"?")
+            .map(|b| b[0])
+            .collect();
+        let mut unique = mapped.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), mapped.len() - 1);
     }
 }
