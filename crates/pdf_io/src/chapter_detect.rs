@@ -26,10 +26,24 @@ pub struct Chapter {
     pub start_page: usize,
     /// 0-based end page index (inclusive).
     pub end_page: usize,
-    /// Full text of the chapter.
+    /// Full text of the chapter, as the model reads it: the chapter's own
+    /// text, preceded by a "[CONTEXT FROM PREVIOUS SECTION]" preamble when the
+    /// previous section's tail is carried over.
     pub text: String,
+    /// Byte offset in `text` where the chapter's own text begins (0 when there
+    /// is no preamble). See [`Chapter::body`].
+    pub body_start: usize,
     /// Approximate token count (chars / 4).
     pub approx_tokens: usize,
+}
+
+impl Chapter {
+    /// The chapter's own text, without the preamble carried from the previous
+    /// section. A quote the model took from the preamble belongs to the
+    /// previous chapter, so the quote check (ASG-Q3) searches only this.
+    pub fn body(&self) -> &str {
+        &self.text[self.body_start..]
+    }
 }
 
 /// Split an `ExtractedPdf` into chapters, sized to fit within `max_tokens`.
@@ -59,6 +73,7 @@ pub fn split_into_chapters(
             start_page: 0,
             end_page: pdf.pages.len().saturating_sub(1),
             text: pdf.pages.join("\n\n"),
+            body_start: 0,
             approx_tokens: pdf.pages.iter().map(|p| p.len()).sum::<usize>() / CHARS_PER_TOKEN,
         }]
     };
@@ -79,6 +94,7 @@ pub fn split_into_chapters(
                 format!("[CONTEXT FROM PREVIOUS SECTION]\n{}\n[END CONTEXT]\n\n{}", prev_tail, ch.text)
             };
             let approx_tokens = text.len() / CHARS_PER_TOKEN;
+            let body_start = text.len() - ch.text.len();
             prev_tail = tail_chars(&ch.text, overlap_chars);
             final_chapters.push(Chapter {
                 id: chapter_id,
@@ -86,6 +102,7 @@ pub fn split_into_chapters(
                 start_page: ch.start_page,
                 end_page: ch.end_page,
                 text,
+                body_start,
                 approx_tokens,
             });
             chapter_id += 1;
@@ -104,6 +121,7 @@ pub fn split_into_chapters(
                     format!("[CONTEXT FROM PREVIOUS SECTION]\n{}\n[END CONTEXT]\n\n{}", prev_tail, part)
                 };
                 let approx_tokens = text.len() / CHARS_PER_TOKEN;
+                let body_start = text.len() - part.len();
                 prev_tail = tail_chars(part, overlap_chars);
                 final_chapters.push(Chapter {
                     id: chapter_id,
@@ -111,6 +129,7 @@ pub fn split_into_chapters(
                     start_page: ch.start_page,
                     end_page: ch.end_page,
                     text,
+                    body_start,
                     approx_tokens,
                 });
                 chapter_id += 1;
@@ -198,6 +217,7 @@ fn build_chapters_from_boundaries(pdf: &ExtractedPdf, boundaries: &[Boundary]) -
             start_page: 0,
             end_page: boundaries[0].page.saturating_sub(1),
             text: text.clone(),
+            body_start: 0,
             approx_tokens: text.len() / 4,
         });
     }
@@ -217,6 +237,7 @@ fn build_chapters_from_boundaries(pdf: &ExtractedPdf, boundaries: &[Boundary]) -
             start_page: start,
             end_page: end.min(total_pages - 1),
             text: text.clone(),
+            body_start: 0,
             approx_tokens: text.len() / CHARS_PER_TOKEN,
         });
     }
@@ -362,6 +383,41 @@ mod tests {
                 chapters[1].text.contains("BANANA"),
                 "overlap context should carry 'BANANA' to next chapter"
             );
+        }
+    }
+
+    #[test]
+    fn body_is_the_chapter_without_the_carried_preamble() {
+        let pdf = make_pdf(vec![
+            "Chapter 1 First\n\nThe first chapter ends on the word BANANA.",
+            "Chapter 2 Second\n\nThe second chapter continues.",
+        ]);
+        let chapters = split_into_chapters(&pdf, 500000, 100);
+        assert_eq!(chapters.len(), 2);
+        // Control: the preamble really is there, and really carries BANANA.
+        assert!(chapters[1].text.starts_with("[CONTEXT FROM PREVIOUS SECTION]"));
+        assert!(chapters[1].text.contains("BANANA"));
+        assert_eq!(chapters[1].body(), pdf.pages[1]);
+        assert!(!chapters[1].body().contains("BANANA"));
+        assert_eq!(chapters[0].body(), chapters[0].text, "no preamble, whole text");
+    }
+
+    #[test]
+    fn each_part_of_a_subdivided_chapter_has_its_own_body() {
+        let paras: Vec<String> = (0..40).map(|i| format!("Paragraph {i} says {}.", "word ".repeat(40))).collect();
+        let pdf = make_pdf(vec![&format!("Chapter 1 Big\n\n{}", paras.join("\n\n"))]);
+        let chapters = split_into_chapters(&pdf, 1000, 50);
+        assert!(chapters.len() > 1);
+        for (i, c) in chapters.iter().enumerate() {
+            assert_eq!(c.text.len() - c.body().len(), c.body_start);
+            if i > 0 {
+                assert!(c.body_start > 0, "part {i} carries a preamble");
+                assert!(!c.body().starts_with("[CONTEXT"), "part {i}'s body starts after it");
+            }
+        }
+        let joined: String = chapters.iter().map(|c| c.body()).collect::<Vec<_>>().join("");
+        for i in 0..40 {
+            assert!(joined.contains(&format!("Paragraph {i} says")), "paragraph {i} lost");
         }
     }
 }
