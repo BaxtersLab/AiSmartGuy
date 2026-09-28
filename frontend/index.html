@@ -363,11 +363,17 @@
       }, 120000);
 
       if (window.__TAURI__ && window.__TAURI__.event) {
+        // Start-up only. A finished run emits pipeline-progress at 100% too,
+        // and this used to show the Ready card over the run's completion
+        // screen after every run (VM harness, 2026-09-27).
+        var startupDone = false;
         window.__TAURI__.event.listen('pipeline-progress', function (event) {
+          if (startupDone) return;
           var p = event.payload;
           if (!p) return;
           setProgress(p.percent, p.message);
           if (p.percent >= 100) {
+            startupDone = true;
             clearTimeout(watchdog);
             setTimeout(showReady, 800);
           }

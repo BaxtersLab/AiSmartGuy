@@ -69,3 +69,19 @@ fn the_lock_is_refused_while_a_lane_is_empty() {
     assert!(refuse < lock, "the refusal must come before the lock");
     assert!(handler.contains("choose a model in all four lanes first"), "and it says why");
 }
+
+/// The start-up splash's listener must stop after start-up: a finished run
+/// also emits pipeline-progress 100%, and it showed the Ready card over the
+/// completion screen after every run.
+#[test]
+fn the_startup_listener_ignores_runs() {
+    let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../frontend/index.html")).unwrap();
+    let at = src.find("listen('pipeline-progress'").expect("the start-up listener");
+    let body = &src[at..at + src[at..].find("showReady, 800").unwrap()];
+    let guard = body.find("if (startupDone) return;").expect("a once-guard");
+    let set = body.find("startupDone = true;").expect("set when start-up completes");
+    assert!(guard < set);
+    // main.rs does emit pipeline-progress 100 at the end of a run (the premise).
+    let main = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../src-tauri/src/main.rs")).unwrap();
+    assert!(main.contains("\"pipeline-progress\", PipelineProgress {\n                    percent: 100.0,"));
+}
