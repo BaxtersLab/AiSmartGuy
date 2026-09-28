@@ -33,12 +33,17 @@ pub enum Entry {
     File(&'static str),
     /// A symlink in the release directory and the (sibling) file it names.
     Link(&'static str, &'static str),
+    /// An unversioned development link (`libllama.so -> libllama.so.0`): in
+    /// the archive, checked against its pinned target, and NOT installed.
+    /// Nothing in the release loads these names (no NEEDED entry, no dlopen
+    /// string), and installing them would put a link-to-a-link in the tree.
+    DevLink(&'static str, &'static str),
 }
 
 impl Entry {
     pub fn name(&self) -> &'static str {
         match self {
-            Entry::File(n) | Entry::Link(n, _) => n,
+            Entry::File(n) | Entry::Link(n, _) | Entry::DevLink(n, _) => n,
         }
     }
 }
@@ -92,7 +97,7 @@ pub static PINS: &[Pin] = &[
 const LAYOUT_LINUX_X64_VULKAN: &[Entry] = &[
     Entry::File("LICENSE"),
     Entry::File("ggml-rpc-server"),
-    Entry::Link("libggml-base.so", "libggml-base.so.0"),
+    Entry::DevLink("libggml-base.so", "libggml-base.so.0"),
     Entry::Link("libggml-base.so.0", "libggml-base.so.0.18.0"),
     Entry::File("libggml-base.so.0.18.0"),
     Entry::File("libggml-cpu-alderlake.so"),
@@ -111,13 +116,13 @@ const LAYOUT_LINUX_X64_VULKAN: &[Entry] = &[
     Entry::File("libggml-cpu-zen4.so"),
     Entry::File("libggml-rpc.so"),
     Entry::File("libggml-vulkan.so"),
-    Entry::Link("libggml.so", "libggml.so.0"),
+    Entry::DevLink("libggml.so", "libggml.so.0"),
     Entry::Link("libggml.so.0", "libggml.so.0.18.0"),
     Entry::File("libggml.so.0.18.0"),
     Entry::File("libllama-batched-bench-impl.so"),
     Entry::File("libllama-bench-impl.so"),
     Entry::File("libllama-cli-impl.so"),
-    Entry::Link("libllama-common.so", "libllama-common.so.0"),
+    Entry::DevLink("libllama-common.so", "libllama-common.so.0"),
     Entry::Link("libllama-common.so.0", "libllama-common.so.0.0.10238"),
     Entry::File("libllama-common.so.0.0.10238"),
     Entry::File("libllama-completion-impl.so"),
@@ -125,10 +130,10 @@ const LAYOUT_LINUX_X64_VULKAN: &[Entry] = &[
     Entry::File("libllama-perplexity-impl.so"),
     Entry::File("libllama-quantize-impl.so"),
     Entry::File("libllama-server-impl.so"),
-    Entry::Link("libllama.so", "libllama.so.0"),
+    Entry::DevLink("libllama.so", "libllama.so.0"),
     Entry::Link("libllama.so.0", "libllama.so.0.0.10238"),
     Entry::File("libllama.so.0.0.10238"),
-    Entry::Link("libmtmd.so", "libmtmd.so.0"),
+    Entry::DevLink("libmtmd.so", "libmtmd.so.0"),
     Entry::Link("libmtmd.so.0", "libmtmd.so.0.0.10238"),
     Entry::File("libmtmd.so.0.0.10238"),
     Entry::File("llama"),
@@ -158,7 +163,7 @@ const LAYOUT_LINUX_X64_VULKAN: &[Entry] = &[
 const LAYOUT_LINUX_X64_CPU: &[Entry] = &[
     Entry::File("LICENSE"),
     Entry::File("ggml-rpc-server"),
-    Entry::Link("libggml-base.so", "libggml-base.so.0"),
+    Entry::DevLink("libggml-base.so", "libggml-base.so.0"),
     Entry::Link("libggml-base.so.0", "libggml-base.so.0.18.0"),
     Entry::File("libggml-base.so.0.18.0"),
     Entry::File("libggml-cpu-alderlake.so"),
@@ -176,13 +181,13 @@ const LAYOUT_LINUX_X64_CPU: &[Entry] = &[
     Entry::File("libggml-cpu-x64.so"),
     Entry::File("libggml-cpu-zen4.so"),
     Entry::File("libggml-rpc.so"),
-    Entry::Link("libggml.so", "libggml.so.0"),
+    Entry::DevLink("libggml.so", "libggml.so.0"),
     Entry::Link("libggml.so.0", "libggml.so.0.18.0"),
     Entry::File("libggml.so.0.18.0"),
     Entry::File("libllama-batched-bench-impl.so"),
     Entry::File("libllama-bench-impl.so"),
     Entry::File("libllama-cli-impl.so"),
-    Entry::Link("libllama-common.so", "libllama-common.so.0"),
+    Entry::DevLink("libllama-common.so", "libllama-common.so.0"),
     Entry::Link("libllama-common.so.0", "libllama-common.so.0.0.10238"),
     Entry::File("libllama-common.so.0.0.10238"),
     Entry::File("libllama-completion-impl.so"),
@@ -190,10 +195,10 @@ const LAYOUT_LINUX_X64_CPU: &[Entry] = &[
     Entry::File("libllama-perplexity-impl.so"),
     Entry::File("libllama-quantize-impl.so"),
     Entry::File("libllama-server-impl.so"),
-    Entry::Link("libllama.so", "libllama.so.0"),
+    Entry::DevLink("libllama.so", "libllama.so.0"),
     Entry::Link("libllama.so.0", "libllama.so.0.0.10238"),
     Entry::File("libllama.so.0.0.10238"),
-    Entry::Link("libmtmd.so", "libmtmd.so.0"),
+    Entry::DevLink("libmtmd.so", "libmtmd.so.0"),
     Entry::Link("libmtmd.so.0", "libmtmd.so.0.0.10238"),
     Entry::File("libmtmd.so.0.0.10238"),
     Entry::File("llama"),
@@ -258,6 +263,35 @@ pub fn pin_for(pins: &'static [Pin], os: &str, arch: &str, backend: &str) -> Res
         .ok_or_else(|| format!(
             "no verified llama.cpp build is pinned for {os}/{arch}/{backend}: nothing was downloaded. \
              Install the distribution's llama.cpp-tools instead."))
+}
+
+/// A pin the installer will use (supervisor's ruling on ASG-Q5): every link
+/// targets a bare file name in the same directory (no `/`, so no `..` and no
+/// absolute path), and that target is itself a pinned regular file (no
+/// dangling link, no link to a link). Checked before any download.
+pub fn pin_is_sound(pin: &Pin) -> Result<(), String> {
+    let mut names = HashSet::new();
+    for e in pin.layout {
+        if e.name().is_empty() || e.name().contains('/') || !names.insert(e.name()) {
+            return Err(format!("unsound pin for {}: bad or duplicate name {:?}", pin.asset, e.name()));
+        }
+    }
+    for e in pin.layout {
+        if let Entry::Link(name, target) = e {
+            if target.is_empty() || target.contains('/') {
+                return Err(format!("unsound pin for {}: link {name} -> {target} is not a bare file name", pin.asset));
+            }
+            if !pin.layout.contains(&Entry::File(target)) {
+                return Err(format!("unsound pin for {}: link {name} -> {target} does not target a pinned file", pin.asset));
+            }
+        }
+        if let Entry::DevLink(name, target) = e {
+            if target.is_empty() || target.contains('/') || !names.contains(target) {
+                return Err(format!("unsound pin for {}: development link {name} -> {target} is not a pinned bare name", pin.asset));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The window showed `asset`; refuse anything else, so a confirmation can
@@ -431,6 +465,13 @@ fn extract(archive: &Path, pin: &Pin, into: &Path) -> Result<(), String> {
                 #[cfg(not(unix))]
                 return Err(format!("links are not supported here: {name}"));
             }
+            Entry::DevLink(_, target) if kind.is_symlink() => {
+                let named = entry.link_name().map_err(|e| format!("archive unreadable: {e}"))?;
+                if named.as_deref() != Some(Path::new(target)) {
+                    return Err(format!("link {name} points to {:?}, the pin says {target}", named));
+                }
+                // Verified, and deliberately not installed.
+            }
             Entry::File(_) if kind.is_symlink() => return Err(format!("link not in the pinned layout: {name}")),
             Entry::Link(..) if kind.is_file() => return Err(format!("pinned as a link, the archive has a file: {name}")),
             _ => return Err(format!("entry type {kind:?} does not match the pin: {name}")),
@@ -459,6 +500,7 @@ pub fn install(
     progress: &dyn Fn(u64),
     fail_at: &dyn Fn(Stage) -> Result<(), String>,
 ) -> Result<PathBuf, String> {
+    pin_is_sound(pin)?;
     let parent = install_dir.parent().ok_or("the install directory has no parent")?;
     std::fs::create_dir_all(parent).map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
     let archive = download(url, pin, parent, progress)?;
@@ -548,6 +590,7 @@ mod tests {
         Entry::File("llama-completion"),
         Entry::File("libggml.so.0.1"),
         Entry::Link("libggml.so.0", "libggml.so.0.1"),
+        Entry::DevLink("libggml.so", "libggml.so.0"),
     ];
 
     fn good() -> Vec<T<'static>> {
@@ -557,6 +600,7 @@ mod tests {
             T::File("llama-test/llama-completion", BIN, 0o4755),
             T::File("llama-test/libggml.so.0.1", b"lib", 0o644),
             T::Link("llama-test/libggml.so.0", "libggml.so.0.1"),
+            T::Link("llama-test/libggml.so", "libggml.so.0"),
         ]
     }
 
@@ -685,6 +729,8 @@ mod tests {
         assert_eq!(std::fs::metadata(&bin).unwrap().permissions().mode() & 0o7777, 0o755, "setuid stripped");
         assert_eq!(std::fs::metadata(home.install.join("libggml.so.0.1")).unwrap().permissions().mode() & 0o777, 0o644);
         assert_eq!(std::fs::read_link(home.install.join("libggml.so.0")).unwrap(), Path::new("libggml.so.0.1"));
+        assert!(std::fs::symlink_metadata(home.install.join("libggml.so")).is_err(),
+                "a development link is verified but never installed");
         assert!(!home.install.join("previous").exists(), "the new install replaces the previous one");
         home.no_leftovers();
         assert_eq!(hits.load(Ordering::SeqCst), 1);
@@ -772,11 +818,12 @@ mod tests {
             ("fifo", T::Fifo("llama-test/libggml.so.0"), "entry type Fifo refused"),
             ("unpinned fifo", T::Fifo("llama-test/pipe"), "entry type Fifo refused"),
             ("file for a link", T::File("llama-test/libggml.so.0", b"x", 0o644), "pinned as a link"),
+            ("dev link retargeted", T::Link("llama-test/libggml.so", "/etc/passwd"), "points to"),
         ];
         for (what, bad, says) in cases {
             let home = Home::new(&what.replace(' ', "_"));
             let mut entries = good();
-            if matches!(what, "link retargeted" | "hardlink" | "fifo" | "file for a link" | "link for a file") {
+            if matches!(what, "link retargeted" | "hardlink" | "fifo" | "file for a link" | "link for a file" | "dev link retargeted") {
                 // replace the good entry of that name, so it is not "listed twice"
                 let name = match &bad { T::File(n, ..) | T::Link(n, _) | T::Hard(n, _) | T::Fifo(n) | T::Dir(n) => *n };
                 entries.retain(|e| !matches!(e, T::File(n, ..) | T::Link(n, _) if *n == name));
@@ -802,6 +849,50 @@ mod tests {
         let (url, _) = serve(body.clone(), Serve::Full, Some(body.len()));
         let err = run(&home, pin, &url).unwrap_err();
         assert!(err.contains("missing from the archive: libggml.so.0"), "{err}");
+        home.untouched();
+    }
+
+    /// ASG-Q5: an unsound pin is refused before anything is downloaded. A
+    /// link must target a bare, pinned regular file.
+    #[test]
+    fn an_unsound_pin_is_refused_before_any_download() {
+        let bad: [(&str, &'static [Entry], &str); 4] = [
+            ("path in target", &[Entry::File("llama-completion"), Entry::File("lib.so.1"), Entry::Link("lib.so", "../lib.so.1")],
+             "is not a bare file name"),
+            ("link to a link", &[Entry::File("llama-completion"), Entry::File("lib.so.1"),
+                                 Entry::Link("lib.so.0", "lib.so.1"), Entry::Link("lib.so", "lib.so.0")],
+             "does not target a pinned file"),
+            ("dangling link", &[Entry::File("llama-completion"), Entry::Link("lib.so", "lib.so.1")],
+             "does not target a pinned file"),
+            ("dev link off the pin", &[Entry::File("llama-completion"), Entry::DevLink("lib.so", "/usr/lib/x")],
+             "is not a pinned bare name"),
+        ];
+        for (what, layout, says) in bad {
+            let home = Home::new(&what.replace(' ', "_"));
+            let body = targz(&good());
+            let mut pin = Pin { ..*pin_of(&body) };
+            pin.layout = layout;
+            let (url, hits) = serve(body.clone(), Serve::Full, Some(body.len()));
+            let err = run(&home, &pin, &url).expect_err(what);
+            assert!(err.contains("unsound pin") && err.contains(says), "{what}: expected {says:?}, got: {err}");
+            assert_eq!(hits.load(Ordering::SeqCst), 0, "{what}: refused before any download");
+            home.untouched();
+        }
+        assert!(pin_is_sound(pin_of(&targz(&good()))).is_ok(), "control: the test layout is sound");
+    }
+
+    /// ASG-Q5: a pinned link whose target file is missing from the archive is
+    /// refused, not installed dangling.
+    #[test]
+    fn a_link_whose_target_is_missing_from_the_archive_is_refused() {
+        let home = Home::new("dangling");
+        let entries: Vec<T> = good().into_iter()
+            .filter(|e| !matches!(e, T::File(n, ..) if *n == "llama-test/libggml.so.0.1")).collect();
+        let body = targz(&entries);
+        let pin = pin_of(&body);
+        let (url, _) = serve(body.clone(), Serve::Full, Some(body.len()));
+        let err = run(&home, pin, &url).unwrap_err();
+        assert!(err.contains("missing from the archive: libggml.so.0.1"), "{err}");
         home.untouched();
     }
 
@@ -834,13 +925,7 @@ mod tests {
             let url = url_for(p);
             assert!(url.contains(&format!("/releases/download/{TAG}/")) && !url.contains("latest"), "{url}");
             assert!(p.layout.contains(&Entry::File(model_loader::LLAMA_BIN)), "{}", p.asset);
-            let names: HashSet<&str> = p.layout.iter().map(|e| e.name()).collect();
-            assert_eq!(names.len(), p.layout.len(), "duplicate names in {}", p.asset);
-            for e in p.layout {
-                if let Entry::Link(n, t) = e {
-                    assert!(!t.contains('/') && names.contains(t), "{n} -> {t} in {}", p.asset);
-                }
-            }
+            pin_is_sound(p).unwrap();
         }
         assert!(pin_for(PINS, "linux", "x86_64", "vulkan").is_ok() && pin_for(PINS, "linux", "x86_64", "cpu").is_ok());
     }
