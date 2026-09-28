@@ -929,7 +929,8 @@
             note = document.createElement('p');
             note.id = 'mlLockNote';
             note.style.cssText = 'font-size:12px;color:#a33;margin:6px 0 0;';
-            mlLockBtn.parentElement.appendChild(note);
+            // Below the button row, not inside it: the row is a flex row.
+            mlLockBtn.parentElement.insertAdjacentElement('afterend', note);
           }
           note.textContent = 'Lock for 10 Runs uses Full mode: choose a model in all four lanes first.';
           return;
