@@ -913,6 +913,23 @@
 
       mlLockBtn.addEventListener('click', function () {
         if (modeLocked) return;
+        // The lock runs Full mode for 10 runs, and nothing can release it
+        // before then: locked with an empty lane, no run could start until
+        // the app was restarted. Refuse, and say why.
+        var lanes = [mlSelect2, mlSelect3, mlSelect4, mlSelect5];
+        if (lanes.some(function (sel) { return !sel.value; })) {
+          var note = document.getElementById('mlLockNote');
+          if (!note) {
+            note = document.createElement('p');
+            note.id = 'mlLockNote';
+            note.style.cssText = 'font-size:12px;color:#a33;margin:6px 0 0;';
+            mlLockBtn.parentElement.appendChild(note);
+          }
+          note.textContent = 'Lock for 10 Runs uses Full mode: choose a model in all four lanes first.';
+          return;
+        }
+        var oldNote = document.getElementById('mlLockNote');
+        if (oldNote) oldNote.remove();
         // Snapshot current model selections before locking
         lockedModelSnapshot = {
           lane2: mlSelect2.value,

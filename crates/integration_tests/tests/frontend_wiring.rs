@@ -54,3 +54,18 @@ fn llama_is_downloaded_only_after_the_user_confirms_the_plan() {
     assert!(!startup.contains("invoke('cmd_install_llama'") && !startup.contains("invoke('cmd_llama_install_plan'"),
             "start-up never downloads");
 }
+
+/// Lock for 10 Runs forces Full mode and cannot be released before 10 runs:
+/// locked with an empty lane, no run could start until a restart. The
+/// handler refuses unless all four lanes are chosen, before it locks.
+#[test]
+fn the_lock_is_refused_while_a_lane_is_empty() {
+    let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../frontend/index.html")).unwrap();
+    let at = src.find("mlLockBtn.addEventListener('click'").expect("the lock handler");
+    let handler = &src[at..at + src[at..].find("\n      });").unwrap()];
+    let check = handler.find("lanes.some(function (sel) { return !sel.value; })").expect("an empty-lane check");
+    let refuse = check + handler[check..].find("return;").expect("a refusal");
+    let lock = handler.find("modeLocked = true;").expect("premise: it locks");
+    assert!(refuse < lock, "the refusal must come before the lock");
+    assert!(handler.contains("choose a model in all four lanes first"), "and it says why");
+}
