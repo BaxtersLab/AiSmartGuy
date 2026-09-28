@@ -2,6 +2,66 @@
 
 _Append-only (Article VIII). Newest entry at the top._
 
+## [2026-09-28] — llama.cpp: the archive's by default; the in-app download pinned and verified (0.1.1)
+
+Supervisor rulings ASG-Q1 and ASG-Q2 (the manager's binding conditions) in
+`constitution/outbox/2026-09-27-supervisor-to-owner-agent.md`.
+
+**`7c755a1` Depends: llama.cpp-tools, version 0.1.1.** 0.1.1 is the next
+version the ledger has never used; `Cargo.toml` and `tauri.conf.json` move
+with it, and a test keeps all three in step.
+- Proven on the host: a fresh HOME, `env -i`, and no network at all
+  (`unshare -rn`). The app found `/usr/bin/llama-completion` and ran on the
+  archive's CPU build in 4:35. Nothing was downloaded: HOME holds only the
+  RAG packets.
+- Proven in the VM: the installed app ran on the archive's CPU build to
+  "Report Complete".
+
+**`16b30ee` The in-app download** (`src-tauri/src/llama_install.rs`):
+- **Pin:** tag `b10238`, immutable `/releases/download/b10238/` URLs.
+  Linux x86_64 only: `vulkan` 32,453,759 bytes `22517e74…`, and `cpu`
+  16,465,416 bytes `e58fdf16…`. Hash source: the local sha256sum of each
+  asset fetched 2026-09-28, equal to GitHub's published digest.
+- **Layouts:** the archives' own listings. `llama-b10238/` holds 53 or 52
+  files plus 10 SONAME links.
+- **Checks:**
+  - the size is enforced while streaming and against the announced length;
+  - the hash is checked before anything is unpacked;
+  - unsafe paths, hardlinks and devices are refused, and so is anything not
+    pinned;
+  - a link is accepted only if the pin names it with the same target, and
+    the link is made from the pin;
+  - the install is staged, then renamed into place; the previous install is
+    restored on failure; there is no fallback.
+- **Flow:** the window shows tag, asset, backend, size and URL, and the
+  `apt install llama.cpp-tools` alternative. Nothing downloads until the
+  user confirms, and the backend refuses any other asset. Nothing runs at
+  start-up.
+- **Other platforms** are refused before any network access. `zip` is
+  removed.
+- **Tests:** 11 installer tests (a local HTTP server and crafted archives,
+  each refusal pinned to its check) and the frontend flow. 18 mutants, all
+  killed.
+- **Real assets** (scratch, not committed): both installed from a local
+  server, and the CPU asset straight from GitHub. `--version` gives
+  `10238 (4ed2b13f7)`, and the entry counts equal the pins.
+- **VM:** llama removed, then Begin Run showed the panel, Cancel went back
+  with nothing downloaded, and Download installed and restarted the run. The
+  guest's install is identical to the verified archive (62 entries: content,
+  links, modes).
+- **This box's existing** `~/.aismartguy/llama-cpp` (from the old
+  unverified download) is byte-identical to the verified Vulkan release: 63
+  of 63.
+
+**One reading needs the supervisor's confirmation (ASG-Q5).** "Reject …
+links" taken literally makes the real asset uninstallable. Its SONAME links
+(`libllama.so.0 -> libllama.so.0.0.10238`, …) are load-bearing. The pin
+lists each link and its target. Any other link is refused, as is a pinned
+link with a different target, and every link is created from the pin, never
+from archive data.
+
+**Gate:** 276 passed, 276 listed.
+
 ## [2026-09-28] — Phase 2 grammar: whitespace bounded
 
 Found in the Hermes-7B Phase 2 evidence run, after the round-2 entry below.
