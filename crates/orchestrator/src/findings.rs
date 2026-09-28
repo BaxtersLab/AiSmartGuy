@@ -606,6 +606,20 @@ mod grammar_tests {
         assert_eq!(continuations_outside_parens(FINDINGS_GBNF), Vec::<String>::new());
     }
 
+    /// Whitespace between tokens is bounded, so a model cannot spend the pass
+    /// on blank lines. Read from the grammar itself: the ws rule's class must
+    /// carry an explicit {0,N} bound, never `*` or `+`.
+    #[test]
+    fn whitespace_in_the_findings_grammar_is_bounded() {
+        let ws = FINDINGS_GBNF.lines()
+            .find(|l| l.trim_start().starts_with("ws ") || l.trim_start().starts_with("ws\t"))
+            .expect("a ws rule");
+        let body = ws.split_once("::=").unwrap().1.trim();
+        assert!(body.ends_with('}') && body.contains("{0,"), "unbounded whitespace: {body}");
+        let bound: usize = body.rsplit_once(',').unwrap().1.trim_end_matches('}').parse().unwrap();
+        assert!(bound <= 32, "bound too loose: {bound}");
+    }
+
     /// Controls: the checker catches the broken shape, and passes the fixed one.
     #[test]
     fn a_rule_that_runs_on_outside_parentheses_is_caught() {

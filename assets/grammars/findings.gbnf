@@ -21,4 +21,7 @@ string   ::= "\"" char* "\""
 char     ::= [^"\\] | "\\" ( ["\\/bfnrt] | "u" hex hex hex hex )
 hex      ::= [0-9a-fA-F]
 
-ws       ::= [ \t\n\r]*
+# Bounded, as in llama.cpp's own json.gbnf: an unbounded ws let a model spend
+# its whole token budget on blank lines (1,949 characters of them in one real
+# Hermes-7B pass, 2026-09-28), and the pass was cut off.
+ws       ::= [ \t\n\r]{0,20}
