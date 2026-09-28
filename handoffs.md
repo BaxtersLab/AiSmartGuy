@@ -2,6 +2,27 @@
 
 _Append-only (Article VIII). Newest entry at the top._
 
+## [2026-09-28] — Phase 2 grammar: whitespace bounded
+
+Found in the Hermes-7B Phase 2 evidence run, after the round-2 entry below.
+`ws ::= [ \t\n\r]*` was unbounded. One fusion pass wrote one finding, then
+1,949 characters of blank lines, and hit the 2048-token cap (2047 runs in
+llama's log). The ws rule is now `{0,20}`, as in llama.cpp's `json.gbnf`
+(commit after `810a8cb`).
+
+**Verified:**
+- the bounded grammar parses on b10238 and 8681, and the output is valid
+  JSON with all five keys;
+- a gate test reads the bound from the grammar, red with `*`.
+
+**Not shown:** a runtime red. The 1.5B model would not emit blank lines
+under either grammar when asked. The guarantee is the grammar's own.
+
+Hermes-7B Phase 2, for the record: 49 min 27 s under contention. 26
+findings across 15 rules, 3 of 4 passes parsed, and 1 fell back (cut off
+mid-array at the cap). Only 4 of 17 exemplar quotes are from the book. That
+is ASG-Q3.
+
 ## [2026-09-27] — Owner review, round 2: the four UNVERIFIED items, run for real
 
 On the supervisor's outbox thread
