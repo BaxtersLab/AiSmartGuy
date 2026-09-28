@@ -2,6 +2,104 @@
 
 _Append-only (Article VIII). Newest entry at the top._
 
+## [2026-09-27] — Owner review, round 2: the four UNVERIFIED items, run for real
+
+On the supervisor's outbox thread
+(`constitution/outbox/2026-09-27-supervisor-to-owner-agent.md`, item 2). Ten
+commits on `ba70368`, `01627c8` … `055046b`. Each found by running the thing,
+fixed, and tested red by mutation.
+
+### Found and fixed
+- **`01627c8` llama on PATH.** `detect_llama` shelled out to `where`, which
+  does not exist on Linux, so the archive's `/usr/bin/llama-completion` was
+  never found. Proven in the VM: the installed app, with no config and no
+  local llama, ran `/usr/bin/llama-completion`.
+- **`4c34aac` vision projectors.** The first `.gguf` in a lane could be an
+  `mmproj-*` projector, and it was loaded as the model. A projector-only
+  folder now says "only a vision projector, which cannot run on its own"
+  (VM screenshot). The lane-to-manifest code moved to `ui::lanes` unchanged.
+- **`9b154fc` `headless_run` example.** A real run without the window, built
+  from the GUI's own builder and `start_run`.
+- **`995069b` GPU refusal → CPU.** The in-app Vulkan llama (b10238, GTX 1660
+  SUPER) failed `ErrorOutOfDeviceMemory` on every attempt from 20:08 to
+  20:25 UTC with 5.4 GB free. It has not failed since, with the same memory
+  in use, and the cause is unknown. One refusal used to end the run. Chapter
+  passes and the fold now rerun on the CPU. Proven with the real app and
+  model: 3 refusals, 3 CPU reruns, synthesis present, 18 min 36 s.
+- **`bf20d07` the prose pipeline analysed nothing.** With `-no-cnv` (raw
+  completion) every pass continued the book, and the run exited 0. The
+  earlier fix, a directive before the passage, did not work: 0 of 2 on the
+  real prompt. One chat turn (`-cnv -st`) gave 2 of 2. Also strips
+  `[end of text]`, which reached every report.
+- **`74eecb9` Phase 2 had never run against a real llama.** The GBNF
+  `finding` rule ran onto a new line outside parentheses. b10238 aborted;
+  8681 dropped the grammar and ran unconstrained. It now parses on both.
+  Phase 2 ran end to end: 4 of 4 passes parsed, 0 fell back, 57 s.
+- **`90b6e3d` Terminate Run.** Terminate killed llama, but the window then
+  said "Something went wrong … check that your models fit in available VRAM".
+  Terminated in the fold, a run came back as a report without its synthesis.
+  Now it says "Run Terminated" and shows the run folder (VM screenshot).
+- **`cfc7abc` dev `run.sh` scrub.** It missed `GSETTINGS_SCHEMA_DIR` under
+  `$HOME/snap/` in a fresh clone, and snap entries mid-list. It now scrubs
+  by value. Tested from a clean environment and a VS Code one.
+- **`b30264c` installed launcher.** `packaging/run.sh` left Wayland on, so
+  the ✕ is dead. Reproduced in the VM: two clicks and one at +26 px did
+  nothing, and the maximized ✕ worked. With `GDK_BACKEND=x11` one click
+  closes it.
+
+- **`055046b` Browse opened one folder picker per visit.** `wireLibraryButtons`
+  ran on every visit to the Model Loader and added listeners each time. After
+  two visits, one click opened two pickers. It now wires once (VM: two
+  pickers before, one after).
+
+### Verified in the VM harness (installed layout, fixed launcher)
+Baseline `rc-2026-09-26-lean-verified`: GNOME 50.1, WebKitGTK 2.52.3,
+archive llama.cpp-tools 8681, no GPU. Checked:
+- PDF drag-and-drop;
+- the library typed with Enter, Browse… → Select, and Reset ↺;
+- the lane dropdown, the projector-only refusal, and the projector-first
+  folder (context labels from the real model's metadata);
+- the modes; Advanced (context, throttle slider and lock, the HRT link
+  "not found");
+- the Fetch HF screen and its URL check;
+- Begin Run, Terminate, Open Output Folder and Open Library;
+- a full run to "Report Complete" (the report reads as analysis);
+- a report PDF dropped back in: "Configuration Found", both buttons work;
+- Lock for 10 Runs;
+- settings kept across a restart;
+- one-click ✕.
+
+Use Optimized and Eject stay disabled until 10 runs, which was not run.
+
+### Model quality: not the pipeline's to fix
+Quotes checked against the book. Qwen2.5-1.5B copies the RAG catalog's
+example phrases as "quotes": 1 of 22 in the prose synthesis came from the
+book, and 0 of 9 Phase 2 findings. Hermes-2-Pro-Mistral-7B quotes the book
+about half the time in model1's passes. In fusion's passes it was 20 of 27
+and 19 of 28, with the catalog 0–1 times. Nothing checks a quote against the source. That is in
+the outbox as a question (ASG-Q3), not a change.
+
+### Open
+- ASG-Q1: `Depends: llama.cpp-tools`.
+- ASG-Q2: the in-app installer downloads llama.cpp `releases/latest`,
+  unpinned and unverified.
+- ASG-Q3: marking quotes not found in the text.
+- Report PDFs make poppler say "Invalid XRef entry 0". The app itself reads
+  them back, and the text extracts. A tiny report written by the same writer
+  does not trigger it. Not diagnosed. The `write_final_pdf_versioned`
+  comment is also wrong: "1.4" writes an xref stream too.
+- Seen, not changed:
+  - Lock for 10 Runs can be set with empty lanes, and then nothing can run
+    until a restart (the lock is not persisted);
+  - under software rendering the processing screen's spinner and live log
+    cost as much CPU as llama itself (7x faster minimized, in the VM);
+  - the fold labels blocks "fusion · chapter N", and Hermes then called the
+    book "Fusion";
+  - after a terminated run, the "Ready" card shows above the next run's
+    progress.
+- The WebKitGTK 2.52.3 GSettings abort (08-05 entry) did not reproduce in the
+  VM without the shim. The shim stays in the dev launcher.
+
 ## [2026-09-27] — The PDF-wrap regression test cleans up even when the crash returns
 
 **Done:** `write_final_pdf_survives_a_multibyte_character_at_the_wrap_point`
