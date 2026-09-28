@@ -79,9 +79,9 @@ pub fn write_final_pdf(
     write_final_pdf_versioned(original_pdf, results_text, manifest_json, output_path, "1.5")
 }
 
-/// Same as [`write_final_pdf`], with the PDF version made explicit —
-/// exists so the xref-table format (streams on 1.5+, classic plain-text
-/// table below that) is testable without re-running a real model.
+/// Same as [`write_final_pdf`], with the PDF version made explicit. The
+/// cross-reference table is always the classic kind, whatever the version
+/// (see below).
 pub fn write_final_pdf_versioned(
     _original_pdf: &Path,
     results_text: &str,
@@ -90,6 +90,12 @@ pub fn write_final_pdf_versioned(
     version: &str,
 ) -> Result<(), PdfIoError> {
     let mut doc = Document::with_version(version);
+    // A classic cross-reference table, for every version. lopdf 0.32 writes
+    // an xref STREAM for a new document (1.4 included) indexed from object 1,
+    // and with the manifest in /Info poppler then said "Syntax Error: Invalid
+    // XRef entry 0" for every report (2026-09-28). The classic table always
+    // carries the free entry 0.
+    doc.reference_table.cross_reference_type = lopdf::xref::XrefType::CrossReferenceTable;
 
     // Built-in Helvetica font — no embedding required
     let font_id = doc.add_object(Object::Dictionary({
@@ -375,6 +381,57 @@ mod wrap_tests {
             .expect("write_final_pdf must not fail on UTF-8 text");
         assert!(written, "report PDF must be written");
     }
+
+    /// A report shaped like a real one: two pages and a manifest of a few KB
+    /// in /Info (the size that made poppler complain, 2026-09-28).
+    fn real_shaped_report(tag: &str) -> (std::path::PathBuf, String) {
+        let dir = std::env::temp_dir().join(format!("asg_xref_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let text: String = (0..130).map(|i| format!("Finding {i}: a quoted line from the book.\n")).collect();
+        let manifest = format!("{{\"run_id\":\"Run_2026-09-28_00-00-00\",\"note\":\"{}\"}}", "x".repeat(4000));
+        let out = dir.join("report.pdf");
+        write_final_pdf(Path::new("unused.pdf"), &text, &manifest, &out).unwrap();
+        (out, manifest)
+    }
+
+    /// A classic cross-reference table, which always carries the free entry
+    /// 0. lopdf's default xref stream is indexed from object 1.
+    #[test]
+    fn the_report_has_a_classic_xref_table_with_entry_zero() {
+        let (out, _) = real_shaped_report("classic");
+        let bytes = std::fs::read(&out).unwrap();
+        let _ = std::fs::remove_dir_all(out.parent().unwrap());
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("\nxref\n0 "), "no classic xref table");
+        assert!(text.contains("0000000000 65535 f"), "no free entry 0");
+        assert!(!text.contains("/Type/XRef"), "an xref stream is still written");
+    }
+
+    /// poppler reads a real-shaped report with no warning. It used to print
+    /// "Syntax Error: Invalid XRef entry 0" for every report. Fails closed
+    /// if pdftotext (poppler-utils, installed by default on Ubuntu desktop)
+    /// is missing.
+    #[test]
+    fn poppler_reads_a_real_shaped_report_without_a_warning() {
+        let (out, _) = real_shaped_report("poppler");
+        let run = std::process::Command::new("pdftotext").arg(&out).arg("-").output()
+            .expect("pdftotext (poppler-utils) is required for this test");
+        let _ = std::fs::remove_dir_all(out.parent().unwrap());
+        let stderr = String::from_utf8_lossy(&run.stderr);
+        assert!(run.status.success() && stderr.trim().is_empty(), "poppler: {stderr}");
+        assert!(String::from_utf8_lossy(&run.stdout).contains("Finding 129"), "text lost");
+    }
+
+    /// Control: the app still reads its own report's manifest back.
+    #[test]
+    fn the_app_reads_its_own_report_back() {
+        use base64::Engine;
+        let (out, manifest) = real_shaped_report("roundtrip");
+        let meta = crate::metadata_extract::extract_manifest(&out).unwrap();
+        let _ = std::fs::remove_dir_all(out.parent().unwrap());
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(meta.manifest_base64.expect("manifest in /Info")).unwrap();
+        assert_eq!(String::from_utf8(decoded).unwrap(), manifest);
+    }
 }
-
-
